@@ -1,12 +1,7 @@
+# game/game_engine.py
 
-from game.hand_evaluator import (
-    is_valid_hand,
-    compare_hands
-)
-from game.deck import Deck
-from game.hand_type import HandType
-from game.player import Player
-
+from .deck import Deck
+from .hand_evaluator import is_valid_hand, compare_hands
 class BigTwoGame:
     def __init__(self, players):
         self.players = players
@@ -32,7 +27,7 @@ class BigTwoGame:
             player.receive_cards(hand)
 
     def find_starting_player(self):
-        # Player who holds the 3♦ starts
+        # The player who holds the 3♦ starts
         for idx, player in enumerate(self.players):
             if any(card.rank == '3' and card.suit == 'Diamonds' for card in player.hand):
                 self.current_player_idx = idx
@@ -53,6 +48,8 @@ class BigTwoGame:
             hand_type, key = is_valid_hand(move)
             if hand_type == HandType.INVALID:
                 print(f"{player.name} made an invalid move.")
+                player.has_passed = True
+                self.round_passes += 1
             elif self.is_move_valid(hand_type, key):
                 player.play_cards(move)
                 player.has_passed = False

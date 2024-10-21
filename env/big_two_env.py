@@ -1,41 +1,39 @@
+# env/big_two_env.py
+
 import gym
 from gym import spaces
 import numpy as np
+
+from agents.rl_agent import RLAgentPlayer
+from agents.random_agent import RandomPlayer
 from game.game_engine import BigTwoGame
-from agent.rl_agent import RLAgentPlayer
-from agent.random_agent import RandomPlayer
+from game.player import Player
 from game.card import Card
+
 class BigTwoEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self):
         super(BigTwoEnv, self).__init__()
-        # Define action and observation spaces based on the game's requirements
-        # For simplicity, we'll use placeholders here
-
-        # Placeholder action space: Discrete set of possible actions
-        self.action_space = spaces.Discrete(self.calculate_action_space_size())
-
-        # Placeholder observation space: Binary vector representing the state
-        self.observation_space = spaces.MultiBinary(self.calculate_observation_space_size())
-
-        # Initialize game components
-        self.players = [RLAgentPlayer("Agent"), RandomPlayer("Opponent1"), RandomPlayer("Opponent2"), RandomPlayer("Opponent3")]
+        self.max_moves = 100  # Maximum number of possible moves
+        self.action_space = spaces.Discrete(self.max_moves)
+        self.observation_space = spaces.Dict({
+            'player_hand': spaces.MultiBinary(52),
+            'last_hand': spaces.MultiBinary(52),
+            'action_mask': spaces.MultiBinary(self.max_moves),
+        })
+        # Initialize players
+        self.players = [
+            RLAgentPlayer("Agent"),
+            RandomPlayer("Opponent1"),
+            RandomPlayer("Opponent2"),
+            RandomPlayer("Opponent3")
+        ]
         self.game = BigTwoGame(self.players)
-        self.current_state = None  # Will hold the observation
+        self.current_state = None
         self.done = False
 
-    def calculate_action_space_size(self):
-        # The number of possible actions can be very large
-        # For the initial version, we might limit the action space to a manageable size
-        return 1000  # Placeholder value
-
-    def calculate_observation_space_size(self):
-        # The observation could be the player's hand and the last played hand
-        return 52 * 2  # For example, 52 cards for own hand, 52 for last played hand
-
     def reset(self):
-        # Reset the game
         self.game = BigTwoGame(self.players)
         self.game.deal_cards()
         self.game.find_starting_player()
@@ -44,37 +42,70 @@ class BigTwoEnv(gym.Env):
         return self.current_state
 
     def step(self, action):
-        # Map the action to a move
-        move = self.action_to_move(action)
-        agent = self.players[self.game.current_player_idx]
-        if isinstance(agent, RLAgentPlayer):
-            agent.set_next_move(move)
-        self.game.play_turn()
-        self.current_state = self.get_state()
-        reward = self.get_reward()
-        self.done = self.game.game_over
-        info = {}
-        return self.current_state, reward, self.done, info
+        # Get the list of valid moves
+        player = self.players[self.game.current_player_idx]
+        valid_moves = player.get_valid_moves(self.game.get_game_state())
+        num_valid_moves = len(valid_moves)
+        action_mask = np.zeros(self.max_moves, dtype=int)
+        action_mask[:num_valid_moves] = 1
+
+        if action >= num_valid_moves or action_mask[action] == 0:
+            # Invalid action
+            reward = -1
+            self.done = True  # Optionally end the episode
+            info = {'invalid_action': True}
+            return self.current_state, reward, self.done, info
+        else:
+            move = valid_moves[action]
+            agent = self.players[self.game.current_player_idx]
+            if isinstance(agent, RLAgentPlayer):
+                agent.set_next_move(move)
+            self.game.play_turn()
+            self.current_state = self.get_state()
+            reward = self.get_reward()
+            self.done = self.game.game_over
+            info = {'invalid_action': False}
+            return self.current_state, reward, self.done, info
 
     def render(self, mode='human'):
-        # Optional: Render the game state to the console
+        # Optional: Display the current game state
         pass
 
     def close(self):
         pass
 
     def get_state(self):
-        # Convert the game state into an observation (e.g., binary vectors)
-        # For simplicity, we'll represent the player's hand and the last played hand
-        player_hand = self.players[self.game.current_player_idx].hand
-        print(player_hand)
-        last_hand = self.game.last_played_hand[1] if self.game.last_played_hand else []
-        hand_vector = self.cards_to_binary_vector(player_hand)
-        last_hand_vector = self.cards_to_binary_vector(last_hand)
-        return np.concatenate([hand_vector, last_hand_vector])
+        player = self.players[self.game.current_player_idx]
+        player_hand = self.cards_to_binary_vector(player.hand)
+        last_hand_key = self.game.last_played_hand[1] if self.game.last_played_hand else []
+
+        # Ensure last_hand_key is always a list
+        if isinstance(last_hand_key, Card):
+            last_hand_cards = [last_hand_key]
+        elif isinstance(last_hand_key, list):
+            last_hand_cards = last_hand_key
+        else:
+            last_hand_cards = []
+
+        last_hand = self.cards_to_binary_vector(last_hand_cards)
+
+        valid_moves = player.get_valid_moves(self.game.get_game_state())
+        action_mask = np.zeros(self.max_moves, dtype=int)
+        num_valid_moves = len(valid_moves)
+        action_mask[:num_valid_moves] = 1
+
+        state = {
+            'player_hand': player_hand,
+            'last_hand': last_hand,
+            'action_mask': action_mask,
+        }
+        return state
 
     def cards_to_binary_vector(self, cards):
         vector = np.zeros(52, dtype=int)
+        # Check if 'cards' is a single Card object
+        if isinstance(cards, Card):
+            cards = [cards]
         for card in cards:
             index = self.card_to_index(card)
             vector[index] = 1
@@ -85,20 +116,11 @@ class BigTwoEnv(gym.Env):
         rank_idx = list(Card.rank_order.values()).index(Card.rank_order[card.rank])
         return suit_idx * 13 + rank_idx
 
-    def action_to_move(self, action):
-        # Map the action integer to a specific move (list of Card objects)
-        # This mapping needs to be defined based on how the action space is constructed
-        # For now, we will return a placeholder
-        possible_moves = self.players[self.game.current_player_idx].get_valid_moves(self.game.get_game_state())
-        if action < len(possible_moves):
-            return possible_moves[action]
-        else:
-            return 'pass'
-
     def get_reward(self):
-        # Define the reward based on the game's outcome
+        # Define the reward function
         if self.done:
-            if self.players[self.game.current_player_idx].name == "Agent":
+            winner = self.players[self.game.current_player_idx]
+            if winner.name == "Agent":
                 return 1  # Agent wins
             else:
                 return -1  # Agent loses
