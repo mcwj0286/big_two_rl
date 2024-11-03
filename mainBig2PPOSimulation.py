@@ -1,212 +1,254 @@
-#main big2PPOSimulation class
-
+# mainBig2PPOSimulation.py
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+print(sys.path)
 import numpy as np
-from PPONetwork import PPONetwork, PPOModel
-from big2Game import vectorizedBig2Games
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import joblib
 import copy
+from models.PPONetwork_pytorch import PPONetwork, PPOModel
+from game.big2Game import vectorizedBig2Games
 
-
-#taken directly from baselines implementation - reshape minibatch in preparation for training.
+# Helper function to reshape minibatch for training
 def sf01(arr):
     """
-    swap and then flatten axes 0 and 1
+    Swap and then flatten axes 0 and 1
     """
     s = arr.shape
     return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
 
 
-
 class big2PPOSimulation(object):
-    
-    def __init__(self, sess, *, inpDim = 412, nGames = 8, nSteps = 20, nMiniBatches = 4, nOptEpochs = 5, lam = 0.95, gamma = 0.995, ent_coef = 0.01, vf_coef = 0.5, max_grad_norm = 0.5, minLearningRate = 0.000001, learningRate, clipRange, saveEvery = 500):
-        
-        #network/model for training
-        self.trainingNetwork = PPONetwork(sess, inpDim, 1695, "trainNet")
-        self.trainingModel = PPOModel(sess, self.trainingNetwork, inpDim, 1695, ent_coef, vf_coef, max_grad_norm)
-        
-        #player networks which choose decisions - allowing for later on experimenting with playing against older versions of the network (so decisions they make are not trained on).
-        self.playerNetworks = {}
-        
-        #for now each player uses the same (up to date) network to make it's decisions.
-        self.playerNetworks[1] = self.playerNetworks[2] = self.playerNetworks[3] = self.playerNetworks[4] = self.trainingNetwork
-        self.trainOnPlayer = [True, True, True, True]
-        
-        tf.global_variables_initializer().run(session=sess)
-        
-        #environment
-        self.vectorizedGame = vectorizedBig2Games(nGames)
-        
-        #params
-        self.nGames = nGames
-        self.inpDim = inpDim
-        self.nSteps = nSteps
-        self.nMiniBatches = nMiniBatches
-        self.nOptEpochs = nOptEpochs
+    def __init__(
+        self,
+        inp_dim=412,
+        n_games=8,
+        n_steps=20,
+        n_minibatches=4,
+        n_opt_epochs=5,
+        lam=0.95,
+        gamma=0.995,
+        ent_coef=0.01,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        min_learning_rate=1e-6,
+        learning_rate=2.5e-4,
+        clip_range=0.2,
+        save_every=500,
+    ):
+        # Network/model for training
+        self.training_network = PPONetwork(inp_dim, 1695)
+        self.training_model = PPOModel(
+            self.training_network,
+            ent_coef=ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            learning_rate=learning_rate,
+        )
+
+        # For now, each player uses the same (up-to-date) network to make decisions
+        self.player_networks = {
+            1: self.training_network,
+            2: self.training_network,
+            3: self.training_network,
+            4: self.training_network,
+        }
+        self.train_on_player = [True, True, True, True]
+
+        # Environment
+        self.vectorized_game = vectorizedBig2Games(n_games)
+
+        # Params
+        self.n_games = n_games
+        self.inp_dim = inp_dim
+        self.n_steps = n_steps
+        self.n_minibatches = n_minibatches
+        self.n_opt_epochs = n_opt_epochs
         self.lam = lam
         self.gamma = gamma
-        self.learningRate = learningRate
-        self.minLearningRate = minLearningRate
-        self.clipRange = clipRange
-        self.saveEvery = saveEvery
-        
-        self.rewardNormalization = 5.0 #divide rewards by this number (so reward ranges from -1.0 to 3.0)
-        
-        #test networks - keep network saved periodically and run test games against current network
-        self.testNetworks = {}
-        
-        # final 4 observations need to be carried over (for value estimation and propagating rewards back)
-        self.prevObs = []
-        self.prevGos = []
-        self.prevAvailAcs = []
-        self.prevRewards = []
-        self.prevActions = []
-        self.prevValues = []
-        self.prevDones = []
-        self.prevNeglogpacs = []
-        
-        #episode/training information
-        self.totTrainingSteps = 0
-        self.epInfos = []
-        self.gamesDone = 0
+        self.learning_rate = learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.clip_range = clip_range
+        self.save_every = save_every
+
+        self.reward_normalization = 5.0  # Divide rewards by this number
+
+        # Episode/training information
+        self.tot_training_steps = 0
+        self.ep_infos = []
+        self.games_done = 0
         self.losses = []
-        
+
+        # Final 4 observations need to be carried over
+        self.prev_obs = []
+        self.prev_gos = []
+        self.prev_avail_acs = []
+        self.prev_rewards = []
+        self.prev_actions = []
+        self.prev_values = []
+        self.prev_dones = []
+        self.prev_neglogpacs = []
+
     def run(self):
-        #run vectorized games for nSteps and generate mini batch to train on.
-        mb_obs, mb_pGos, mb_actions, mb_values, mb_neglogpacs, mb_rewards, mb_dones, mb_availAcs = [], [], [], [], [], [], [], []
-        for i in range(len(self.prevObs)):
-            mb_obs.append(self.prevObs[i])
-            mb_pGos.append(self.prevGos[i])
-            mb_actions.append(self.prevActions[i])
-            mb_values.append(self.prevValues[i])
-            mb_neglogpacs.append(self.prevNeglogpacs[i])
-            mb_rewards.append(self.prevRewards[i])
-            mb_dones.append(self.prevDones[i])
-            mb_availAcs.append(self.prevAvailAcs[i])
-        if len(self.prevObs) == 4:
-            endLength = self.nSteps
+        # Run vectorized games for n_steps and generate minibatch for training
+        mb_obs, mb_pGos, mb_actions, mb_values = [], [], [], []
+        mb_neglogpacs, mb_rewards, mb_dones, mb_availAcs = [], [], [], []
+
+        for i in range(len(self.prev_obs)):
+            mb_obs.append(self.prev_obs[i])
+            mb_pGos.append(self.prev_gos[i])
+            mb_actions.append(self.prev_actions[i])
+            mb_values.append(self.prev_values[i])
+            mb_neglogpacs.append(self.prev_neglogpacs[i])
+            mb_rewards.append(self.prev_rewards[i])
+            mb_dones.append(self.prev_dones[i])
+            mb_availAcs.append(self.prev_avail_acs[i])
+
+        if len(self.prev_obs) == 4:
+            end_length = self.n_steps
         else:
-            endLength = self.nSteps-4
-        for _ in range(self.nSteps):
-            currGos, currStates, currAvailAcs = self.vectorizedGame.getCurrStates()
-            currStates = np.squeeze(currStates)
-            currAvailAcs = np.squeeze(currAvailAcs)
-            currGos = np.squeeze(currGos)
-            actions, values, neglogpacs = self.trainingNetwork.step(currStates, currAvailAcs)
-            rewards, dones, infos = self.vectorizedGame.step(actions)
-            mb_obs.append(currStates.copy())
-            mb_pGos.append(currGos)
-            mb_availAcs.append(currAvailAcs.copy())
+            end_length = self.n_steps - 4
+
+        for _ in range(self.n_steps):
+            curr_gos, curr_states, curr_avail_acs = self.vectorized_game.getCurrStates()
+            curr_states = np.squeeze(curr_states)
+            curr_avail_acs = np.squeeze(curr_avail_acs)
+            curr_gos = np.squeeze(curr_gos)
+
+            actions, values, neglogpacs = self.training_network.act(
+                curr_states, curr_avail_acs
+            )
+            rewards, dones, infos = self.vectorized_game.step(actions)
+
+            mb_obs.append(curr_states.copy())
+            mb_pGos.append(curr_gos)
+            mb_availAcs.append(curr_avail_acs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
             mb_dones.append(list(dones))
-            #now back assign rewards if state is terminal
-            toAppendRewards = np.zeros((self.nGames,))
-            mb_rewards.append(toAppendRewards)
-            for i in range(self.nGames):
-                if dones[i] == True:
+
+            # Back assign rewards if state is terminal
+            to_append_rewards = np.zeros((self.n_games,))
+            mb_rewards.append(to_append_rewards)
+            for i in range(self.n_games):
+                if dones[i]:
                     reward = rewards[i]
-                    mb_rewards[-1][i] = reward[mb_pGos[-1][i]-1] / self.rewardNormalization
-                    mb_rewards[-2][i] = reward[mb_pGos[-2][i]-1] / self.rewardNormalization
-                    mb_rewards[-3][i] = reward[mb_pGos[-3][i]-1] / self.rewardNormalization
-                    mb_rewards[-4][i] = reward[mb_pGos[-4][i]-1] / self.rewardNormalization
+                    mb_rewards[-1][i] = reward[mb_pGos[-1][i] - 1] / self.reward_normalization
+                    mb_rewards[-2][i] = reward[mb_pGos[-2][i] - 1] / self.reward_normalization
+                    mb_rewards[-3][i] = reward[mb_pGos[-3][i] - 1] / self.reward_normalization
+                    mb_rewards[-4][i] = reward[mb_pGos[-4][i] - 1] / self.reward_normalization
                     mb_dones[-2][i] = True
                     mb_dones[-3][i] = True
                     mb_dones[-4][i] = True
-                    self.epInfos.append(infos[i])
-                    self.gamesDone += 1
-                    print("Game %d finished. Lasted %d turns" % (self.gamesDone, infos[i]['numTurns']))
-        self.prevObs = mb_obs[endLength:]
-        self.prevGos = mb_pGos[endLength:]
-        self.prevRewards = mb_rewards[endLength:]
-        self.prevActions = mb_actions[endLength:]
-        self.prevValues = mb_values[endLength:]
-        self.prevDones = mb_dones[endLength:]
-        self.prevNeglogpacs = mb_neglogpacs[endLength:]
-        self.prevAvailAcs = mb_availAcs[endLength:]
-        mb_obs = np.asarray(mb_obs, dtype=np.float32)[:endLength]
-        mb_availAcs = np.asarray(mb_availAcs, dtype=np.float32)[:endLength]
-        mb_rewards = np.asarray(mb_rewards, dtype=np.float32)[:endLength]
-        mb_actions = np.asarray(mb_actions, dtype=np.float32)[:endLength]
+                    self.ep_infos.append(infos[i])
+                    self.games_done += 1
+                    print(f"Game {self.games_done} finished. Lasted {infos[i]['numTurns']} turns")
+
+        self.prev_obs = mb_obs[end_length:]
+        self.prev_gos = mb_pGos[end_length:]
+        self.prev_rewards = mb_rewards[end_length:]
+        self.prev_actions = mb_actions[end_length:]
+        self.prev_values = mb_values[end_length:]
+        self.prev_dones = mb_dones[end_length:]
+        self.prev_neglogpacs = mb_neglogpacs[end_length:]
+        self.prev_avail_acs = mb_availAcs[end_length:]
+
+        mb_obs = np.asarray(mb_obs, dtype=np.float32)[:end_length]
+        mb_availAcs = np.asarray(mb_availAcs, dtype=np.float32)[:end_length]
+        mb_rewards = np.asarray(mb_rewards, dtype=np.float32)[:end_length]
+        mb_actions = np.asarray(mb_actions, dtype=np.int64)[:end_length]
         mb_values = np.asarray(mb_values, dtype=np.float32)
-        mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)[:endLength]
-        mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        #discount/bootstrap value function with generalized advantage estimation:
+        mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)[:end_length]
+        mb_dones = np.asarray(mb_dones, dtype=np.bool_)
+
+        # Discount/bootstrap value function with generalized advantage estimation
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
         for k in range(4):
             lastgaelam = 0
-            for t in reversed(range(k, endLength, 4)):
-                nextNonTerminal = 1.0 - mb_dones[t]
-                nextValues = mb_values[t+4]
-                delta = mb_rewards[t] + self.gamma * nextValues * nextNonTerminal - mb_values[t]
-                mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextNonTerminal * lastgaelam
-        
-        mb_values = mb_values[:endLength]
-        #mb_dones = mb_dones[:endLength]
-        mb_returns = mb_advs + mb_values
-        
-        return map(sf01, (mb_obs, mb_availAcs, mb_returns, mb_actions, mb_values, mb_neglogpacs))
-        
-    def train(self, nTotalSteps):
+            for t in reversed(range(k, end_length, 4)):
+                nextnonterminal = 1.0 - mb_dones[t]
+                nextvalues = mb_values[t + 4]
+                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
+                mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
 
-        nUpdates = nTotalSteps // (self.nGames * self.nSteps)
-        
-        for update in range(nUpdates):
-            
-            alpha = 1.0 - update/nUpdates
-            lrnow = self.learningRate * alpha
-            if lrnow < self.minLearningRate:
-                lrnow = self.minLearningRate
-            cliprangenow = self.clipRange * alpha
-            
-            states, availAcs, returns, actions, values, neglogpacs = self.run()
-            
-            batchSize = states.shape[0]
-            self.totTrainingSteps += batchSize
-            
-            nTrainingBatch = batchSize // self.nMiniBatches
-            
-            currParams = self.trainingNetwork.getParams()
-            
+        mb_values = mb_values[:end_length]
+        mb_returns = mb_advs + mb_values
+
+        return map(sf01, (mb_obs, mb_availAcs, mb_returns, mb_actions, mb_values, mb_neglogpacs))
+
+    def train(self, n_total_steps):
+        n_updates = n_total_steps // (self.n_games * self.n_steps)
+
+        for update in range(n_updates):
+            alpha = 1.0 - update / n_updates
+            lrnow = self.learning_rate * alpha
+            if lrnow < self.min_learning_rate:
+                lrnow = self.min_learning_rate
+            cliprangenow = self.clip_range * alpha
+
+            (
+                states,
+                avail_acs,
+                returns,
+                actions,
+                values,
+                neglogpacs,
+            ) = self.run()
+
+            batch_size = states.shape[0]
+            self.tot_training_steps += batch_size
+
+            n_training_batch = batch_size // self.n_minibatches
+
             mb_lossvals = []
-            inds = np.arange(batchSize)
-            for _ in range(self.nOptEpochs):
+            inds = np.arange(batch_size)
+            for _ in range(self.n_opt_epochs):
                 np.random.shuffle(inds)
-                for start in range(0, batchSize, nTrainingBatch):
-                    end = start + nTrainingBatch
+                for start in range(0, batch_size, n_training_batch):
+                    end = start + n_training_batch
                     mb_inds = inds[start:end]
-                    mb_lossvals.append(self.trainingModel.train(lrnow, cliprangenow, states[mb_inds], availAcs[mb_inds], returns[mb_inds], actions[mb_inds], values[mb_inds], neglogpacs[mb_inds]))
+
+                    # Prepare minibatch data
+                    mb_states = torch.tensor(states[mb_inds], dtype=torch.float32)
+                    mb_avail_acs = torch.tensor(avail_acs[mb_inds], dtype=torch.float32)
+                    mb_returns = torch.tensor(returns[mb_inds], dtype=torch.float32)
+                    mb_actions = torch.tensor(actions[mb_inds], dtype=torch.int64)
+                    mb_values = torch.tensor(values[mb_inds], dtype=torch.float32)
+                    mb_neglogpacs = torch.tensor(neglogpacs[mb_inds], dtype=torch.float32)
+
+                    # Update the PPO model
+                    pg_loss, vf_loss, entropy_loss = self.training_model.train(
+                        lrnow,
+                        cliprangenow,
+                        mb_states,
+                        mb_avail_acs,
+                        mb_returns,
+                        mb_actions,
+                        mb_values,
+                        mb_neglogpacs,
+                    )
+                    mb_lossvals.append([pg_loss, vf_loss, entropy_loss])
+
             lossvals = np.mean(mb_lossvals, axis=0)
             self.losses.append(lossvals)
-            
-            newParams = self.trainingNetwork.getParams()
-            needToReset = 0
-            for param in newParams:
-                if np.sum(np.isnan(param)) > 0:
-                    needToReset = 1
-                    
-            if needToReset == 1:
-                self.trainingNetwork.loadParams(currParams)
-            
-            if update % self.saveEvery == 0:
-                name = "modelParameters" + str(update)
-                self.trainingNetwork.saveParams(name)
-                joblib.dump(self.losses,"losses.pkl")
-                joblib.dump(self.epInfos, "epInfos.pkl")
 
-    
+            if update % self.save_every == 0:
+                name = f"output/modelParameters{update}.pt"
+                torch.save(self.training_network.state_dict(), name)
+                joblib.dump(self.losses, "output/losses.pkl")
+                joblib.dump(self.ep_infos, "output/epInfos.pkl")
+
+
 if __name__ == "__main__":
     import time
-    
-    with tf.Session() as sess:
-        mainSim = big2PPOSimulation(sess, nGames=64, nSteps=20, learningRate = 0.00025, clipRange = 0.2)
-        start = time.time()
-        mainSim.train(1000000000)
-        end = time.time()
-        print("Time Taken: %f" % (end-start))
-        
-        
-        
+
+    main_sim = big2PPOSimulation(n_games=64, n_steps=20, learning_rate=2.5e-4, clip_range=0.2)
+    start = time.time()
+    main_sim.train(1000000000)
+    end = time.time()
+    print(f"Time Taken: {end - start}")

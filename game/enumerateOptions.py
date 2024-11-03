@@ -1,7 +1,7 @@
 #enumerate options
 import pickle
 import numpy as np
-import gameLogic
+import game.gameLogic as gameLogic
 
 nActions = np.array([13,33,31,330,1287,1694])
 nAcSum = np.cumsum(nActions[:-1])

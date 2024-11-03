@@ -1,6 +1,6 @@
 #big 2 class
-import enumerateOptions
-import gameLogic
+import game.enumerateOptions as enumerateOptions
+import game.gameLogic as gameLogic
 import numpy as np
 import random
 import math
