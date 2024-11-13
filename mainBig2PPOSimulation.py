@@ -2,7 +2,6 @@
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-print(sys.path)
 import numpy as np
 import torch
 import torch.nn as nn
@@ -114,6 +113,7 @@ class big2PPOSimulation(object):
 
         for _ in range(self.n_steps):
             curr_gos, curr_states, curr_avail_acs = self.vectorized_game.getCurrStates()
+            print(f'curr_gos: {curr_gos.shape},curr_states: {curr_states.shape}, curr_avail_acs: {curr_avail_acs.shape}')
             curr_states = np.squeeze(curr_states)
             curr_avail_acs = np.squeeze(curr_avail_acs)
             curr_gos = np.squeeze(curr_gos)
