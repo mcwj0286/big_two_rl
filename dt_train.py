@@ -1,11 +1,13 @@
+import os
+import math
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from models.decision_transformer import DecisionTransformer
-from game.big2Game import vectorizedBig2Games
 from collections import defaultdict
-import os 
+from models.decision_transformer import DecisionTransformer
+from game.big2Game import big2Game  # Assuming big2Game is the correct class
+# If vectorizedBig2Games is properly implemented, you can use it instead
+import game.enumerateOptions as enumerateOptions
 class Big2DecisionTransformerTrainer:
     def __init__(
         self,
@@ -17,7 +19,7 @@ class Big2DecisionTransformerTrainer:
         n_heads=8,
         drop_p=0.1,
         n_games=8,
-        batch_size=64,
+        batch_size=16,
         learning_rate=1e-4,
         max_ep_len=200,
         device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -44,11 +46,10 @@ class Big2DecisionTransformerTrainer:
 
         self.optimizer = torch.optim.AdamW(
             self.dt.parameters(),
-            lr=learning_rate
+            lr=learning_rate,
+            eps=1e-5  # Increase epsilon for stability
         )
 
-        self.env = vectorizedBig2Games(n_games)
-        
         # Separate buffers for each player
         self.trajectory_buffer = {
             1: [],
@@ -57,87 +58,77 @@ class Big2DecisionTransformerTrainer:
             4: []
         }
 
+        self.player_ids = [1, 2, 3, 4]
+
     def collect_trajectories(self, n_games):
         """Collect game trajectories for all players"""
+
         for _ in range(n_games):
-            # Initialize trajectory storage for each player
+            # Initialize new game
+            game = big2Game()
+            game.reset()
+            game_done = False
+            timestep = 0
+
+            # Initialize trajectories for each player
             current_trajectories = {
                 1: defaultdict(list),
                 2: defaultdict(list),
                 3: defaultdict(list),
                 4: defaultdict(list)
             }
-            
-            # Reset environment
-            curr_gos, curr_states, curr_avail_acs = self.env.getCurrStates()
-            timestep = 0
-            game_done = False
-            
-            while not game_done and timestep < self.max_ep_len:
-                # For each active player
-                for player_idx in range(self.n_games):
-                    player = curr_gos[player_idx]
-                    
-                    # Store state and available actions
-                    current_trajectories[player]['states'].append(curr_states[player_idx])
-                    current_trajectories[player]['available_actions'].append(curr_avail_acs[player_idx])
-                    current_trajectories[player]['timesteps'].append(timestep)
-                    
-                    # Get action (random valid action during collection)
-                    valid_actions = np.where(curr_avail_acs[player_idx] == 1)[0]
-                    
-                    # Check if there are valid actions
-                    if len(valid_actions) == 0:
-                        print(f"Warning: No valid actions for player {player} at timestep {timestep}")
-                        # We should investigate why this happens
-                        # For now, let's print debug information
-                        print(f"Current game state: {curr_states[player_idx]}")
-                        print(f"Available actions mask: {curr_avail_acs[player_idx]}")
-                        # Choose pass action or default action
-                        action = 1694  # Pass action index, verify this is correct for your game
-                    else:
-                        action = np.random.choice(valid_actions)
-                    
-                    # Take action
-                    try:
-                        rewards, dones, infos = self.env.step([action])
-                    except Exception as e:
-                        print(f"Error taking action {action}: {e}")
-                        print(f"Player: {player}, Valid actions: {valid_actions}")
-                        raise e
-                    
-                    # Store action and intermediate reward
-                    current_trajectories[player]['actions'].append(action)
-                    current_trajectories[player]['rewards'].append(0)  # Store intermediate reward
-                    
-                    game_done = any(dones)
-                    if game_done:
-                        # Update final rewards for all players
-                        for p in range(1, 5):
-                            if len(current_trajectories[p]['rewards']) > 0:
-                                current_trajectories[p]['rewards'][-1] = rewards[player_idx][p-1]
-                        break
-                    
-                    # Get next state
-                    curr_gos, curr_states, curr_avail_acs = self.env.getCurrStates()
-                
-                timestep += 1
-            
-            # Add completed trajectories to buffer
-            for player in range(1, 5):
-                if len(current_trajectories[player]['states']) > 0:
-                    self.trajectory_buffer[player].append(dict(current_trajectories[player]))
 
-            # Print debug information for completed game
-            print(f"Game completed at timestep {timestep}")
-            print(f"Trajectory lengths: {[len(current_trajectories[p]['states']) for p in range(1, 5)]}")
+            while not game_done and timestep < self.max_ep_len:
+                # Get current player, state and available actions
+                current_player, curr_state, curr_avail_actions = game.getCurrentState()
+                # Initialize actions dict
+                actions = {}
+
+                # For the current player only
+                state = curr_state[0]  # Remove batch dimension
+                available_actions = curr_avail_actions[0]  # Remove batch dimension
+                # print(f"Max available action: {np.max(available_actions)}, Min available action: {np.min(available_actions)}")
+                # Get available action indices
+                available_action_indices = np.where(available_actions == 0)[0]
+                
+                if len(available_action_indices) > 0:
+                    action = np.random.choice(available_action_indices)
+                else:
+                    # If no actions available, use pass action
+                    action = enumerateOptions.passInd
+
+                # Record current state and action
+                current_trajectories[current_player]['states'].append(state)
+                current_trajectories[current_player]['actions'].append(action)
+                current_trajectories[current_player]['rewards'].append(0)  # Reward will be assigned later
+                current_trajectories[current_player]['timesteps'].append(timestep)
+                # print(f"Player {current_player} - Action: {action}")
+                # Step the environment
+                reward, game_done, info = game.step(action)
+
+                # Update timestep
+                timestep += 1
+
+                # If game is done, assign rewards
+                if game_done:
+                    print(f"Game done. Reward: {reward}, Info: {info}")
+                    for player_id in self.player_ids:
+                        if len(current_trajectories[player_id]['rewards']) > 0:
+                            current_trajectories[player_id]['rewards'][-1] = reward[player_id-1]
+                    
+                    # Append trajectories to buffer
+                    for player_id in self.player_ids:
+                        if len(current_trajectories[player_id]['states']) > 0:
+                            self.trajectory_buffer[player_id].append(dict(current_trajectories[player_id]))
+
+                
 
     def prepare_batch(self, player):
         """Prepare batch of data for specific player"""
         player_trajectories = self.trajectory_buffer[player]
         if len(player_trajectories) < self.batch_size:
             return None
-            
+
         # Randomly sample trajectories
         batch_trajectories = np.random.choice(
             player_trajectories,
@@ -147,7 +138,7 @@ class Big2DecisionTransformerTrainer:
 
         # Initialize batch tensors
         states = torch.zeros(
-            (self.batch_size, self.context_len, 412),
+            (self.batch_size, self.context_len, self.dt.state_dim),
             dtype=torch.float32,
             device=self.device
         )
@@ -166,178 +157,160 @@ class Big2DecisionTransformerTrainer:
             dtype=torch.long,
             device=self.device
         )
-        attention_mask = torch.ones(
+        attention_mask = torch.zeros(
             (self.batch_size, self.context_len),
             dtype=torch.bool,
             device=self.device
         )
 
         for i, traj in enumerate(batch_trajectories):
-            # Get trajectory length
-            traj_length = len(traj['states'])
-            
-            # Calculate returns-to-go
-            returns = torch.tensor(traj['rewards'], device=self.device)
-            returns_to_go_all = torch.cumsum(returns.flip(0), 0).flip(0)
-            
-            # Handle trajectories shorter than context_len
-            if traj_length >= self.context_len:
-                start_idx = np.random.randint(0, traj_length - self.context_len + 1)
+            traj_len = len(traj['states'])
+            # Random start point in trajectory to sample context_len steps
+            if traj_len >= self.context_len:
+                start_idx = np.random.randint(0, traj_len - self.context_len + 1)
                 end_idx = start_idx + self.context_len
-                attention_mask[i] = 1
             else:
                 start_idx = 0
-                end_idx = traj_length
-                attention_mask[i, traj_length:] = 0
-                
-            # Fill batch tensors
-            states[i, :end_idx-start_idx] = torch.tensor(
-                traj['states'][start_idx:end_idx],
-                device=self.device
-            )
-            actions[i, :end_idx-start_idx] = torch.tensor(
-                traj['actions'][start_idx:end_idx],
-                device=self.device
-            )
-            returns_to_go[i, :end_idx-start_idx] = returns_to_go_all[start_idx:end_idx].unsqueeze(-1)
-            timesteps[i, :end_idx-start_idx] = torch.tensor(
-                traj['timesteps'][start_idx:end_idx],
-                device=self.device
-            )
+                end_idx = traj_len
 
+            # Fetch the slices
+            traj_states = traj['states'][start_idx:end_idx]
+            traj_actions = traj['actions'][start_idx:end_idx]
+            traj_rewards = traj['rewards'][start_idx:end_idx]
+            traj_timesteps = traj['timesteps'][start_idx:end_idx]
+
+            # Convert to tensors
+            traj_states = torch.tensor(np.array(traj_states), dtype=torch.float32, device=self.device)
+            traj_actions = torch.tensor(np.array(traj_actions), dtype=torch.long, device=self.device)
+            traj_rewards = torch.tensor(np.array(traj_rewards), dtype=torch.float32, device=self.device)
+            traj_timesteps = torch.tensor(np.array(traj_timesteps), dtype=torch.long, device=self.device)
+
+            # Calculate returns to go
+            returns_to_go_ = traj_rewards.flip(0).cumsum(0).flip(0).unsqueeze(-1)
+
+            # Place into batch tensors
+            seq_len = traj_states.shape[0]
+            states[i, :seq_len] = traj_states
+            actions[i, :seq_len] = traj_actions
+            returns_to_go[i, :seq_len] = returns_to_go_
+            timesteps[i, :seq_len] = traj_timesteps
+
+            attention_mask[i, :seq_len] = 1  # Mark valid steps
+            # print(f"States shape: {states.shape}, Actions shape: {actions.shape}, Returns shape: {returns_to_go.shape}, Timesteps shape: {timesteps.shape}, Mask shape: {attention_mask.shape}")
+            # print(f"returns_to_go: {returns_to_go}")
         return timesteps, states, actions, returns_to_go, attention_mask
 
     def train_step(self, player):
-        """Perform one training step for specific player"""
-        self.dt.train()
-        
+        """Perform a training step for a specific player"""
         batch = self.prepare_batch(player)
         if batch is None:
-            return None
-            
+            print("Not enough data to form a batch.")
+            return None  # Not enough data to form a batch
+
         timesteps, states, actions, returns_to_go, attention_mask = batch
-        
-        # Forward pass
-        state_preds, action_preds, return_preds = self.dt(
+        # print(f"States shape: {states.shape}, Actions shape: {len(actions)}, Returns shape: {returns_to_go.shape}, Timesteps shape: {timesteps.shape}, Mask shape: {attention_mask.shape}")
+        self.dt.train()
+        self.optimizer.zero_grad()
+
+        # Forward pass through the model
+        action_preds = self.dt(
             timesteps=timesteps,
             states=states,
             actions=actions,
             returns_to_go=returns_to_go,
         )
 
-        # Calculate losses using attention mask
-        action_loss = F.cross_entropy(
-            action_preds.reshape(-1, 1695)[attention_mask.reshape(-1)],
-            actions.reshape(-1)[attention_mask.reshape(-1)]
-        )
+        # Add debug prints
+        # print(f"Action preds shape: {action_preds.shape}")
+        # print(f"Actions shape: {actions.shape}")
         
-        state_loss = F.mse_loss(
-            state_preds[attention_mask],
-            states[attention_mask]
-        )
+        # Shift predictions and targets
+        action_preds = action_preds[:, :-1]  # Remove last prediction
+        action_target = actions[:, 1:]  # Remove first action
+        attention_mask = attention_mask[:, 1:]
         
-        return_loss = F.mse_loss(
-            return_preds[attention_mask],
-            returns_to_go[attention_mask]
-        )
-        
-        loss = action_loss + 0.1 * state_loss + 0.1 * return_loss
+        # Reshape tensors
+        action_preds = action_preds.reshape(-1, self.dt.act_dim)
+        action_target = action_target.reshape(-1)
+        attention_mask = attention_mask.reshape(-1)
 
-        # Backward pass
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.dt.parameters(), 0.25)
-        self.optimizer.step()
+        # Filter padding
+        valid_indices = attention_mask.bool()
+        action_preds = action_preds[valid_indices]
+        action_target = action_target[valid_indices]
 
-        return {
-            'action_loss': action_loss.item(),
-            'state_loss': state_loss.item(),
-            'return_loss': return_loss.item(),
-            'total_loss': loss.item()
-        }
+        # Verify shapes before loss calculation
+        if action_preds.size(0) == 0 or action_target.size(0) == 0:
+            return float('inf')
+
+        # Add gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.dt.parameters(), 1.0)
+
+        # Compute loss with safety checks
+        try:
+            loss = F.cross_entropy(action_preds, action_target)
+            if torch.isfinite(loss):
+                loss.backward()
+                self.optimizer.step()
+                return loss.item()
+            else:
+                return float('inf')
+        except Exception as e:
+            print(f"Error in loss calculation: {e}")
+            return float('inf')
+        
 
     def save_checkpoint(self, current_loss):
-        """
-        Save model checkpoint if there's an improvement
-        """
         if current_loss < self.best_loss:
-            print(f"Loss improved from {self.best_loss:.6f} to {current_loss:.6f}")
-            print(f"Saving model to {self.best_model_path}")
-            # Delete previous best model if it exists
-            if os.path.exists(self.best_model_path):
-                os.remove(self.best_model_path)
-            # Save new best model
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.dt.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'loss': current_loss,
-            }, self.best_model_path)
+            torch.save(self.dt.state_dict(), self.best_model_path)
             self.best_loss = current_loss
-            return True
-        return False
+            print(f"Saved new best model with loss {current_loss:.4f}")
 
     def train(self, n_epochs=100, games_per_epoch=100):
-        """Main training loop"""
-        print(f"Number of epochs: {n_epochs}")
-        print(f"Games per epoch: {games_per_epoch}")
-        
-        # Validate environment
-        curr_gos, curr_states, curr_avail_acs = self.env.getCurrStates()
-        print(f"Initial state shapes:")
-        print(f"Current players: {curr_gos.shape}")
-        print(f"States: {curr_states.shape}")
-        print(f"Available actions: {curr_avail_acs.shape}")
         for epoch in range(n_epochs):
-            print(f"Epoch {epoch}")
-            
             # Collect new trajectories
             self.collect_trajectories(games_per_epoch)
-            
-            # Train on each player's data
-            epoch_losses = defaultdict(list)
-            total_epoch_loss = 0
-            total_valid_players = 0
 
-            for player in range(1, 5):
-                player_losses = []
-                for _ in range(games_per_epoch // 4):
-                    losses = self.train_step(player)
-                    if losses is not None:
-                        player_losses.append(losses['total_loss'])
-                
-                if player_losses:  # If we have valid losses for this player
-                    avg_player_loss = np.mean(player_losses)
-                    epoch_losses[player] = avg_player_loss
-                    total_epoch_loss += avg_player_loss
-                    total_valid_players += 1
-                    print(f"Player {player} Average Loss = {avg_player_loss:.6f}")
+            epoch_losses = {player_id: [] for player_id in self.player_ids}
 
-            # Only compute average loss if we have valid losses
-            if total_valid_players > 0:
-                average_epoch_loss = total_epoch_loss / total_valid_players
-                print(f"Epoch {epoch} Average Loss Across Players = {average_epoch_loss:.6f}")
-                
-                # Try to save checkpoint
-                improved = self.save_checkpoint(average_epoch_loss)
-                if improved:
-                    print(f"New best model saved at epoch {epoch}")
+            # For each player, perform training steps
+            for player_id in self.player_ids:
+                num_batches = len(self.trajectory_buffer[player_id]) // self.batch_size
+
+                for _ in range(num_batches):
+                    loss = self.train_step(player_id)
+                    if loss is not None:
+                        epoch_losses[player_id].append(loss)
+
+            # Calculate average losses
+            avg_losses = {}
+            for player_id in self.player_ids:
+                if epoch_losses[player_id]:
+                    avg_loss = sum(epoch_losses[player_id]) / len(epoch_losses[player_id])
+                    avg_losses[player_id] = avg_loss
+                else:
+                    avg_losses[player_id] = float('inf')
+
+            # Print epoch summary
+            print(f"Epoch {epoch + 1}/{n_epochs}")
+            for player_id in self.player_ids:
+                print(f"Player {player_id} - Loss: {avg_losses[player_id]:.4f}")
+
+            # Save checkpoint
+            avg_loss = sum(avg_losses.values()) / len(avg_losses)
+            self.save_checkpoint(avg_loss)
+
+            # Optionally clear buffers to save memory
+            self.trajectory_buffer = {player_id: [] for player_id in self.player_ids}
 
     def load_best_model(self):
-        """
-        Load the best model checkpoint
-        """
         if os.path.exists(self.best_model_path):
-            checkpoint = torch.load(self.best_model_path)
-            self.dt.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.best_loss = checkpoint['loss']
-            print(f"Loaded best model with loss {self.best_loss:.6f}")
-            return True
-        print("No checkpoint found")
-        return False
-    
+            self.dt.load_state_dict(torch.load(self.best_model_path))
+            self.dt.to(self.device)
+            print("Loaded best model from checkpoint.")
+        else:
+            print("No checkpoint found.")
 
 if __name__ == "__main__":
     trainer = Big2DecisionTransformerTrainer()
-    trainer.train(n_epochs=100, games_per_epoch=100)
+    trainer.train(n_epochs=20, games_per_epoch=50)
