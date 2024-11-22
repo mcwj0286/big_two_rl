@@ -5,24 +5,30 @@ import torch
 import torch.nn.functional as F
 from collections import defaultdict
 from models.decision_transformer import DecisionTransformer
+import random
 from game.big2Game import big2Game  # Assuming big2Game is the correct class
 # If vectorizedBig2Games is properly implemented, you can use it instead
 import game.enumerateOptions as enumerateOptions
+from PPONetwork import PPONetwork  # Import the PPONetwork class
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+# import h5py  # Import h5py for HDF5 handling
 class Big2DecisionTransformerTrainer:
     def __init__(
         self,
         state_dim=412,
         act_dim=1695,
         n_blocks=6,
-        h_dim=128,
+        h_dim=1024,
         context_len=20,
         n_heads=8,
         drop_p=0.1,
-        n_games=8,
-        batch_size=16,
+        n_games=32,
+        batch_size=64,
         learning_rate=1e-4,
         max_ep_len=200,
         device='cuda' if torch.cuda.is_available() else 'cpu'
+        
     ):
         self.best_loss = float('inf')
         self.best_model_path = 'best_dt_model.pt'
@@ -60,6 +66,11 @@ class Big2DecisionTransformerTrainer:
 
         self.player_ids = [1, 2, 3, 4]
 
+        self.sess = tf.Session()
+        self.ppo_agent = PPONetwork(self.sess, state_dim, act_dim, 'ppo_agent')
+        self.ppo_agent.load_model(self.ppo_agent,'modelParameters136500')
+        self.sess.run(tf.global_variables_initializer())
+
     def collect_trajectories(self, n_games):
         """Collect game trajectories for all players"""
 
@@ -81,21 +92,12 @@ class Big2DecisionTransformerTrainer:
             while not game_done and timestep < self.max_ep_len:
                 # Get current player, state and available actions
                 current_player, curr_state, curr_avail_actions = game.getCurrentState()
-                # Initialize actions dict
-                actions = {}
-
-                # For the current player only
                 state = curr_state[0]  # Remove batch dimension
                 available_actions = curr_avail_actions[0]  # Remove batch dimension
-                # print(f"Max available action: {np.max(available_actions)}, Min available action: {np.min(available_actions)}")
-                # Get available action indices
-                available_action_indices = np.where(available_actions == 0)[0]
-                
-                if len(available_action_indices) > 0:
-                    action = np.random.choice(available_action_indices)
-                else:
-                    # If no actions available, use pass action
-                    action = enumerateOptions.passInd
+
+                # Use PPO agent to select action
+                action, _, _ = self.ppo_agent.step([state], [available_actions])
+                action = action[0]
 
                 # Record current state and action
                 current_trajectories[current_player]['states'].append(state)
@@ -111,7 +113,7 @@ class Big2DecisionTransformerTrainer:
 
                 # If game is done, assign rewards
                 if game_done:
-                    print(f"Game done. Reward: {reward}, Info: {info}")
+                    # print(f"Game done. Reward: {reward}, Info: {info}")
                     for player_id in self.player_ids:
                         if len(current_trajectories[player_id]['rewards']) > 0:
                             current_trajectories[player_id]['rewards'][-1] = reward[player_id-1]
@@ -312,5 +314,12 @@ class Big2DecisionTransformerTrainer:
             print("No checkpoint found.")
 
 if __name__ == "__main__":
+    # Set random seeds for reproducibility
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     trainer = Big2DecisionTransformerTrainer()
-    trainer.train(n_epochs=20, games_per_epoch=50)
+    trainer.train(n_epochs=1500, games_per_epoch=100)
