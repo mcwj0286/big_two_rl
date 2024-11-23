@@ -76,7 +76,7 @@ class PPOGameplayDataset(Dataset):
         if self.file:
             self.file.close()
 
-def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
+def collate_fn(batch, fixed_seq_length=21, act_dim=1695):
     """
     Custom collate function to pad/truncate sequences, generate attention masks,
     and convert actions to one-hot encoding.
@@ -192,19 +192,19 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
         'player_id': batch_player_ids           # (B,)
     }
 
-if __name__ == "__main__":
-    # Example usage
-    dataset = PPOGameplayDataset(hdf5_path='trajectories.hdf5')
-    print(f"Total sequences: {len(dataset)}")
+# if __name__ == "__main__":
+#     # Example usage
+#     dataset = PPOGameplayDataset(hdf5_path='trajectories.hdf5')
+#     print(f"Total sequences: {len(dataset)}")
 
-    # Retrieve a sample
-    sample = dataset[9]
-    print(sample['states'].shape)
-    print(sample['actions'].shape)
-    print(sample['rewards'])
-    print(sample['timesteps'].shape)
-    print(sample['game_id'])
-    print(sample['player_id'])
+#     # Retrieve a sample
+#     sample = dataset[9]
+#     print(sample['states'].shape)
+#     print(sample['actions'])
+#     print(sample['rewards'])
+#     print(sample['timesteps'].shape)
+#     print(sample['game_id'])
+#     print(sample['player_id'])
 
-    # Close the dataset when done
-    dataset.close()
+#     # Close the dataset when done
+#     dataset.close()

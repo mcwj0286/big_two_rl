@@ -30,7 +30,7 @@ def train_decision_transformer(
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=0  # Adjust based on your system
+        num_workers=1  # Adjust based on your system
     )
 
     # Initialize the Decision Transformer model
@@ -49,8 +49,10 @@ def train_decision_transformer(
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
     # Define loss function
-    criterion = nn.CrossEntropyLoss(ignore_index=-1)  # Ignore padding index
-
+    # criterion = nn.CrossEntropyLoss(ignore_index=-1)  # Ignore padding index
+    # criterion = nn.BCEWithLogitsLoss()
+    # Define loss function
+    criterion = nn.MSELoss()
     # Training loop
     model.train()
     for epoch in range(max_epochs):
@@ -67,11 +69,11 @@ def train_decision_transformer(
             returns_to_go = torch.flip(torch.cumsum(torch.flip(rewards, dims=[1]), dim=1), dims=[1])
             returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
             # Print the shape of the input to the model
-            print(f"Timesteps shape: {timesteps[0]}")
-            print(f"States shape: {states.shape}")
-            print(f"Actions shape: {actions.shape}")
-            print(f"Returns to go shape: {returns_to_go[0]}")
-            print(f"Attention mask shape: {attention_mask.shape}")
+            # print(f"Timesteps shape: {timesteps[0]}")
+            # print(f"States shape: {states.shape}")
+            # print(f"Actions shape: {actions.shape}")
+            # print(f"Returns to go shape: {returns_to_go[0]}")
+            # print(f"Attention mask shape: {attention_mask.shape}")
             # Forward pass
             action_preds = model(
                 timesteps=timesteps,
@@ -81,23 +83,23 @@ def train_decision_transformer(
                 # attention_mask=attention_mask
             )
 
-            action_preds = action_preds.detach().cpu()  # Detach to avoid backpropagating through the model
+            action_preds = action_preds  # Detach to avoid backpropagating through the model
               # Output shape: (B, T, act_dim)
-            print(f"Action preds shape: {action_preds.shape}")
+            # print(f"Action preds shape: {action_preds.shape}")
             # Reshape for loss computation
             B, T, act_dim = action_preds.shape
             action_preds = action_preds.view(B * T, act_dim)
-            actions_target = actions.view(B * T)
+            actions_target = actions.view(B * T, act_dim)
 
             # Apply attention mask
             valid_indices = actions_target != -1  # Exclude padding positions
             action_preds_valid = action_preds[valid_indices]
             actions_target_valid = actions_target[valid_indices]
-            print(f"Action preds valid shape: {action_preds_valid.shape}")
-            print(f"Actions target valid shape: {actions_target_valid.shape}")
-            # Compute loss
+            # print(f"Action preds valid shape: {action_preds_valid.shape}")
+            # print(f"Actions target valid shape: {actions_target_valid.shape}")
+            # # Compute loss
             loss = criterion(action_preds_valid, actions_target_valid)
-            print(f"Loss: {loss.item()}")
+            # print(f"Loss: {loss.item()}")
             # Backpropagation and optimization
             optimizer.zero_grad()
             loss.backward()
