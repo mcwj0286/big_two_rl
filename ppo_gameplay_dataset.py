@@ -4,6 +4,8 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F  # Import for one-hot encoding
+
 class PPOGameplayDataset(Dataset):
     def __init__(self, hdf5_path):
         """
@@ -74,41 +76,122 @@ class PPOGameplayDataset(Dataset):
         if self.file:
             self.file.close()
 
-def collate_fn(batch):
+def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
     """
-    Custom collate function to handle variable-length sequences.
+    Custom collate function to pad/truncate sequences, generate attention masks,
+    and convert actions to one-hot encoding.
 
     Args:
-        batch (list): List of dictionaries with sequence data.
+        batch (list): List of dictionaries returned by PPOGameplayDataset.__getitem__().
+        fixed_seq_length (int): Desired fixed sequence length. Must be a multiple of 3.
+        act_dim (int): Dimension of the action space for one-hot encoding.
 
     Returns:
-        dict: Batched and padded tensors.
+        dict: Batched and padded tensors along with the attention mask.
     """
-    states = [item['states'] for item in batch]
-    actions = [item['actions'] for item in batch]
-    rewards = [item['rewards'] for item in batch]
-    timesteps = [item['timesteps'] for item in batch]
-    game_ids = [item['game_id'] for item in batch]
-    player_ids = [item['player_id'] for item in batch]
+    if fixed_seq_length % 3 != 0:
+        raise ValueError("fixed_seq_length must be a multiple of 3 to align with interleaved tokens.")
 
-    # Pad sequences
-    states_padded = pad_sequence(states, batch_first=True, padding_value=0)
-    actions_padded = pad_sequence(actions, batch_first=True, padding_value=-1)  # Assuming -1 is the padding index
-    rewards_padded = pad_sequence(rewards, batch_first=True, padding_value=0)
-    timesteps_padded = pad_sequence(timesteps, batch_first=True, padding_value=0)
+    padded_states = []
+    padded_actions = []
+    padded_rewards = []
+    padded_timesteps = []
+    game_ids = []
+    player_ids = []
+    attention_masks = []
 
-    # Create attention masks
-    attention_masks = (actions_padded != -1).long()  # Assuming actions_padded are padded with -1
+    for sample in batch:
+        seq_len = sample['states'].size(0)
+
+        # Truncate sequences longer than fixed_seq_length
+        if seq_len > fixed_seq_length:
+            states = sample['states'][:fixed_seq_length]
+            actions = sample['actions'][:fixed_seq_length]
+            rewards = sample['rewards'][:fixed_seq_length]
+            timesteps = sample['timesteps'][:fixed_seq_length]
+            attn_mask = torch.ones(fixed_seq_length, dtype=torch.long)
+        else:
+            # Calculate padding size
+            pad_size = fixed_seq_length - seq_len
+
+            # Pad states with zeros
+            states = torch.cat([
+                sample['states'],
+                torch.zeros(pad_size, sample['states'].size(1), dtype=torch.float32)
+            ], dim=0)
+
+            # Pad actions with -1 (assuming -1 is the padding index)
+            actions = torch.cat([
+                sample['actions'],
+                torch.full((pad_size,), -1, dtype=torch.long)
+            ], dim=0)
+
+            # Pad rewards with zeros
+            rewards = torch.cat([
+                sample['rewards'],
+                torch.zeros(pad_size, dtype=torch.float32)
+            ], dim=0)
+
+            # Pad timesteps with zeros
+            timesteps = torch.cat([
+                sample['timesteps'],
+                torch.zeros(pad_size, dtype=torch.long)
+            ], dim=0)
+
+            # Create attention mask: 1 for valid tokens, 0 for padding
+            attn_mask = torch.cat([
+                torch.ones(seq_len, dtype=torch.long),
+                torch.zeros(pad_size, dtype=torch.long)
+            ], dim=0)
+
+        # One-Hot Encode Actions
+        # Initialize one-hot tensor with zeros
+        one_hot_actions = torch.zeros(fixed_seq_length, act_dim, dtype=torch.float32)
+
+        # Create a mask for valid actions (actions >= 0)
+        valid_mask = actions >= 0
+
+        # Get valid action indices
+        valid_actions = actions[valid_mask]
+
+        # Perform one-hot encoding for valid actions
+        if valid_actions.dim() == 0:
+            # Handle the case when there's only one valid action
+            valid_actions = valid_actions.unsqueeze(0)
+            valid_mask = valid_mask.unsqueeze(0)
+
+        one_hot = F.one_hot(valid_actions, num_classes=act_dim).float()
+
+        # Assign one-hot vectors to the initialized tensor
+        one_hot_actions[valid_mask] = one_hot
+
+        padded_states.append(states)
+        padded_actions.append(one_hot_actions)  # Now shape: (fixed_seq_length, act_dim)
+        padded_rewards.append(rewards)
+        padded_timesteps.append(timesteps)
+        attention_masks.append(attn_mask)
+        game_ids.append(sample['game_id'])
+        player_ids.append(sample['player_id'])
+
+    # Stack all padded tensors
+    batch_states = torch.stack(padded_states)           # Shape: (B, fixed_seq_length, state_dim)
+    batch_actions = torch.stack(padded_actions)         # Shape: (B, fixed_seq_length, act_dim)
+    batch_rewards = torch.stack(padded_rewards)         # Shape: (B, fixed_seq_length)
+    batch_timesteps = torch.stack(padded_timesteps)     # Shape: (B, fixed_seq_length)
+    batch_attention_mask = torch.stack(attention_masks) # Shape: (B, fixed_seq_length)
+    batch_game_ids = torch.stack(game_ids)             # Shape: (B,)
+    batch_player_ids = torch.stack(player_ids)         # Shape: (B,)
 
     return {
-        'states': states_padded,
-        'actions': actions_padded,
-        'rewards': rewards_padded,
-        'timesteps': timesteps_padded,
-        'game_id': torch.stack(game_ids),
-        'player_id': torch.stack(player_ids),
-        'attention_mask': attention_masks
+        'states': batch_states,                 # (B, fixed_seq_length, state_dim)
+        'actions': batch_actions,               # (B, fixed_seq_length, act_dim)
+        'rewards': batch_rewards,               # (B, fixed_seq_length)
+        'timesteps': batch_timesteps,           # (B, fixed_seq_length)
+        'attention_mask': batch_attention_mask, # (B, fixed_seq_length)
+        'game_id': batch_game_ids,              # (B,)
+        'player_id': batch_player_ids           # (B,)
     }
+
 if __name__ == "__main__":
     # Example usage
     dataset = PPOGameplayDataset(hdf5_path='trajectories.hdf5')
@@ -117,7 +200,7 @@ if __name__ == "__main__":
     # Retrieve a sample
     sample = dataset[9]
     print(sample['states'].shape)
-    print(sample['actions'])
+    print(sample['actions'].shape)
     print(sample['rewards'])
     print(sample['timesteps'].shape)
     print(sample['game_id'])
@@ -125,4 +208,3 @@ if __name__ == "__main__":
 
     # Close the dataset when done
     dataset.close()
-

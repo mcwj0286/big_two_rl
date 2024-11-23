@@ -13,6 +13,8 @@ from game.big2Game import big2Game
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 import h5py
+from torch.utils.data import DataLoader
+from ppo_gameplay_dataset import PPOGameplayDataset, collate_fn
 
 class Big2DecisionTransformerTrainer:
     def __init__(
@@ -67,40 +69,16 @@ class Big2DecisionTransformerTrainer:
 
         # Load data from HDF5
         self.hdf5_path = hdf5_path
-        self.player_ids = [1, 2, 3, 4]
-        self.data = self.load_data()
 
-    def load_data(self):
-        data = {player_id: {'states': [], 'actions': [], 'returns': [], 'timesteps': []} for player_id in self.player_ids}
+        # Initialize Dataset and DataLoader
+        self.dataset = PPOGameplayDataset(hdf5_path=self.hdf5_path)
+        self.dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn
+        )
 
-        with h5py.File(self.hdf5_path, 'r') as h5file:
-            for player_id in self.player_ids:
-                group_name = f'player_{player_id}'
-                if group_name in h5file:
-                    group = h5file[group_name]
-                    states = group['states'][:]
-                    actions = group['actions'][:]
-                    rewards = group['rewards'][:]
-                    timesteps = group['timesteps'][:]
-
-                    # Calculate returns to go
-                    returns = np.zeros_like(rewards)
-                    ep_indices = np.where(rewards != 0)[0]
-                    start_idx = 0
-                    for end_idx in ep_indices:
-                        ep_rewards = rewards[start_idx:end_idx+1]
-                        ep_returns = np.flip(np.cumsum(np.flip(ep_rewards)))
-                        returns[start_idx:end_idx+1] = ep_returns
-                        start_idx = end_idx + 1
-
-                    data[player_id]['states'] = states
-                    data[player_id]['actions'] = actions
-                    data[player_id]['returns'] = returns
-                    data[player_id]['timesteps'] = timesteps
-                else:
-                    print(f"No data for player {player_id} in HDF5 file.")
-
-        return data
 
     def prepare_batches(self, player):
         states = self.data[player]['states']
@@ -146,26 +124,30 @@ class Big2DecisionTransformerTrainer:
         return batches
 
     def train_one_epoch(self):
-        epoch_losses = {player_id: [] for player_id in self.player_ids}
-        for player_id in self.player_ids:
-            batches = self.prepare_batches(player_id)
-            for batch in batches:
-                loss = self.train_step(batch)
-                if loss is not None:
-                    epoch_losses[player_id].append(loss)
-
-        avg_losses = {}
-        for player_id in self.player_ids:
-            if epoch_losses[player_id]:
-                avg_loss = sum(epoch_losses[player_id]) / len(epoch_losses[player_id])
-                avg_losses[player_id] = avg_loss
-            else:
-                avg_losses[player_id] = float('inf')
-
-        return avg_losses
+        epoch_losses = []
+        for batch in self.dataloader:
+            loss = self.train_step(batch)
+            if loss is not None:
+                epoch_losses.append(loss)
+        avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('inf')
+        return avg_loss
 
     def train_step(self, batch):
-        timesteps, states, actions, returns_to_go, attention_mask = batch
+        states = batch['states'].to(self.device)
+        actions = batch['actions'].to(self.device)
+        rewards = batch['rewards'].to(self.device)
+        timesteps = batch['timesteps'].to(self.device)
+        attention_mask = batch['attention_mask'].to(self.device)
+        print(f"States shape: {states.shape}")
+        print(f"Actions shape: {actions.shape}")
+        print(f"Rewards shape: {rewards.shape}")
+        print(f"Timesteps shape: {timesteps.shape}")
+        print(f"Attention mask shape: {attention_mask.shape}")
+        # Compute returns-to-go
+        # Shape of rewards: (B, T)
+        returns_to_go = torch.flip(torch.cumsum(torch.flip(rewards, dims=[1]), dim=1), dims=[1])
+        returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
+
         self.dt.train()
         self.optimizer.zero_grad()
 
@@ -175,6 +157,7 @@ class Big2DecisionTransformerTrainer:
             states=states,
             actions=actions,
             returns_to_go=returns_to_go,
+            attention_mask=attention_mask
         )
 
         # Shift predictions and targets
@@ -183,16 +166,16 @@ class Big2DecisionTransformerTrainer:
         attention_mask = attention_mask[:, 1:].contiguous()
 
         # Reshape tensors
-        action_preds = action_preds.reshape(-1, self.dt.act_dim)
-        action_target = action_target.reshape(-1)
-        attention_mask = attention_mask.reshape(-1)
+        action_preds = action_preds.view(-1, self.dt.act_dim)
+        action_target = action_target.view(-1)
+        attention_mask = attention_mask.view(-1)
 
         # Filter padding
         valid_indices = attention_mask.bool()
         action_preds = action_preds[valid_indices]
         action_target = action_target[valid_indices]
 
-        if action_preds.size(0) == 0 or action_target.size(0) == 0:
+        if action_preds.size(0) == 0:
             return None
 
         # Compute loss
@@ -227,7 +210,7 @@ class Big2DecisionTransformerTrainer:
             avg_losses = self.train_one_epoch()
             print(f"\nEpoch {epoch + 1}/{n_epochs}")
             for player_id in self.player_ids:
-                print(f"Player {player_id} - Loss: {avg_losses[player_id]:.4f}")
+                print(f"Player {player_id} - Loss: {avg_losses:.4f}")
 
             # Validate the model
             print("Validating the model...")
