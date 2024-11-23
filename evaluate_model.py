@@ -8,7 +8,7 @@ import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 import h5py
 from PPONetwork import PPONetwork
-from models.decision_transformer import DecisionTransformer
+from models.decision_transformer_original import DecisionTransformer
 from game.big2Game import big2Game  # Ensure this is the correct import path
 
 class ModelEvaluator:
@@ -16,7 +16,7 @@ class ModelEvaluator:
         self,
         state_dim=412,
         act_dim=1695,
-        best_model_path='./output/best_dt_model.pt',
+        best_model_path='./output/decision_transformer.pt',
         ppo_model_path='modelParameters136500',
         device='cuda' if torch.cuda.is_available() else 'cpu'
     ):
@@ -30,9 +30,10 @@ class ModelEvaluator:
             act_dim=self.act_dim,
             n_blocks=6,
             h_dim=1024,
-            context_len=20,
+            context_len=30,
             n_heads=8,
-            drop_p=0.1
+            drop_p=0.1,
+            max_timestep=1000
         ).to(self.device)
 
         # Load Decision Transformer weights
@@ -81,10 +82,18 @@ class ModelEvaluator:
                         # Assuming the DT expects tensors in a specific format
                         # Adjust as per your DT's forward method
                         # Here, we use the current state as the context
-                        timesteps = torch.tensor([timestep], dtype=torch.long, device=self.device).unsqueeze(0)
-                        states = torch.tensor([state], dtype=torch.float32, device=self.device).unsqueeze(0)
-                        actions = torch.zeros((1), dtype=torch.long, device=self.device)
-                        returns_to_go = torch.tensor([target_reward], dtype=torch.float32, device=self.device).unsqueeze(0)
+                        fixed_seq_length = 1
+                        batch_states = torch.tensor([state], dtype=torch.float32, device=self.device).unsqueeze(0).repeat(1, fixed_seq_length, 1)
+                        batch_actions = torch.zeros((1, fixed_seq_length, self.act_dim), dtype=torch.float32, device=self.device)
+                        batch_rewards = torch.tensor([target_reward], dtype=torch.float32, device=self.device).unsqueeze(0).repeat(1, fixed_seq_length)
+                        batch_timesteps = torch.tensor([timestep], dtype=torch.long, device=self.device).unsqueeze(0).repeat(1, fixed_seq_length)
+                        batch_attention_mask = torch.ones((1, fixed_seq_length), dtype=torch.bool, device=self.device)
+
+                        timesteps = batch_timesteps
+                        states = batch_states
+                        actions = batch_actions
+                        returns_to_go = batch_rewards
+                        attention_mask = batch_attention_mask
                         # attention_mask = torch.ones((1, 1), dtype=torch.bool, device=self.device)
                         # print(f"Timesteps shape: {timesteps.shape}")
                         # print(f"States shape: {states.shape}")
@@ -98,13 +107,21 @@ class ModelEvaluator:
                             returns_to_go=returns_to_go,
                             # attention_mask=attention_mask
                         )
-                        # available_actions_tensor = torch.tensor(available_actions, dtype=torch.float32, device=self.device)
+                        available_actions_tensor = torch.tensor(available_actions, dtype=torch.float32, device=self.device)
                         # available_actions_tensor = available_actions_tensor.unsqueeze(0).unsqueeze(0)
-                        # action_probs = action_probs + available_actions_tensor
+                        action_probs = action_probs + available_actions_tensor
                         action_probs = torch.softmax(action_probs, dim=-1)
-                        # print(f"action_probs : {action_probs}")
-                        action = torch.argmax(action_probs, dim=-1).item()
-                        print(f'decision transformer action: {action}')
+                        top_probs, top_indices = torch.topk(action_probs, 2, dim=-1)
+
+                        print(f'Top 2 action probabilities: {top_probs.tolist()}')
+                        print(f'Top 2 action indices: {top_indices.tolist()}')
+                        max_prob , action_idx = torch.max(action_probs, dim=-1)
+                        if action_idx.item()== 1694:
+                            action_probs[0][0][1694] = 0.001
+                        max_prob , action = torch.max(action_probs, dim=-1)
+
+                        # action = torch.argmax(action_probs, dim=-1).item()
+                        print(f'decision transformer action: {action.item()}, max_prob: {max_prob.item()}')
                 else:  # PPO Agent players
                     action, _, _ = self.ppo_agent.step([state], [available_actions])
                     action = action[0]
@@ -160,8 +177,8 @@ if __name__ == "__main__":
     evaluator = ModelEvaluator(
         state_dim=412,
         act_dim=1695,
-        best_model_path='output/best_dt_model.pt',
+        best_model_path='output/decision_transformer.pt',
         ppo_model_path='modelParameters136500',
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
-    evaluator.evaluate_game(num_games=1)
+    evaluator.evaluate_game(num_games=100)

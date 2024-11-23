@@ -6,7 +6,8 @@ from torch.utils.data import DataLoader
 from ppo_gameplay_dataset import PPOGameplayDataset, collate_fn
 from models.decision_transformer_original import DecisionTransformer
 import torch.optim as optim
-
+# Import ModelEvaluator
+from evaluate_model import ModelEvaluator
 def train_decision_transformer(
     hdf5_path,
     state_dim,
@@ -44,7 +45,14 @@ def train_decision_transformer(
         drop_p=drop_p,
         max_timestep=max_timestep
     ).to(device)
-
+    # Initialize ModelEvaluator
+    # evaluator = ModelEvaluator(
+    #     dt_model=model,
+    #     state_dim=state_dim,
+    #     act_dim=act_dim,
+    #     ppo_model_path='modelParameters136500',
+    #     device=device
+    # )
     # Define optimizer and learning rate scheduler
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
@@ -112,6 +120,22 @@ def train_decision_transformer(
 
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch [{epoch+1}/{max_epochs}] Average Loss: {avg_loss:.4f}")
+
+        # # Perform validation after each epoch
+        # model.eval()
+        # win_rate, avg_reward = evaluator.evaluate_game(num_games=100)  # Adjust num_games as needed
+        # model.train()
+        # print(f"Validation Metrics - Win Rate: {win_rate:.2f}%, Avg. Reward: {avg_reward:.2f}")
+        # # Check if both win rate and rewards have improved
+        # if win_rate > best_win_rate and avg_reward > best_avg_reward:
+        #     best_win_rate = win_rate
+        #     best_avg_reward = avg_reward
+        #     # Save the current model as the best model
+        #     torch.save(model.state_dict(), save_model_path)
+        #     print(f"New best model saved with win rate: {win_rate:.2f}% and avg reward: {avg_reward:.2f}")
+        # else:
+        #     print(f"No improvement in validation metrics.")
+
 
     # Save the trained model
     torch.save(model.state_dict(), save_model_path)
