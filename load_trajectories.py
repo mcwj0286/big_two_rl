@@ -33,7 +33,7 @@ def analyze_trajectories(hdf5_path='output/trajectories.hdf5', act_dim=1695):
         # Overall action distribution
         total_actions = total_action_counts.sum()
         print("\nOverall Action Distribution:")
-        top_actions = np.argsort(-total_action_counts)[:10]
+        top_actions = np.argsort(-total_action_counts)[:100]
         for a in top_actions:
             count = total_action_counts[a]
             percentage = (count / total_actions) * 100

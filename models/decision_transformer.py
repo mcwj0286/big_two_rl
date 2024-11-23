@@ -99,12 +99,12 @@ class DecisionTransformer(nn.Module):
         self.embed_state = torch.nn.Linear(state_dim, h_dim)
 
         # # discrete actions
-        # self.embed_action = torch.nn.Embedding(act_dim, h_dim)
-        # use_action_tanh = False # False for discrete actions
+        self.embed_action = torch.nn.Embedding(act_dim, h_dim)
+        use_action_tanh = False # False for discrete actions
 
         # continuous actions
-        self.embed_action = torch.nn.Linear(act_dim, h_dim)
-        use_action_tanh = True # True for continuous actions
+        # self.embed_action = torch.nn.Linear(act_dim, h_dim)
+        # use_action_tanh = True # True for continuous actions
 
         ### prediction heads
         self.predict_rtg = torch.nn.Linear(h_dim, 1)
@@ -150,4 +150,4 @@ class DecisionTransformer(nn.Module):
         state_preds = self.predict_state(h[:,2])    # predict next state given r, s, a
         action_preds = self.predict_action(h[:,1])  # predict action given r, s
 
-        return state_preds, action_preds, return_preds
+        return action_preds

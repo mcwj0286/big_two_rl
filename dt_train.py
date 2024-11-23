@@ -12,7 +12,7 @@ import game.enumerateOptions as enumerateOptions
 from PPONetwork import PPONetwork  # Import the PPONetwork class
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
-# import h5py  # Import h5py for HDF5 handling
+import h5py  # Import h5py for HDF5 handling
 class Big2DecisionTransformerTrainer:
     def __init__(
         self,
@@ -27,7 +27,8 @@ class Big2DecisionTransformerTrainer:
         batch_size=64,
         learning_rate=1e-4,
         max_ep_len=200,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        hdf5_path='trajectories.hdf5'  # Path to HDF5 file
         
     ):
         self.best_loss = float('inf')
@@ -70,6 +71,20 @@ class Big2DecisionTransformerTrainer:
         self.ppo_agent = PPONetwork(self.sess, state_dim, act_dim, 'ppo_agent')
         self.ppo_agent.load_model(self.ppo_agent,'modelParameters136500')
         self.sess.run(tf.global_variables_initializer())
+                # Initialize HDF5 file
+        self.hdf5_file = h5py.File(hdf5_path, 'a')  # Append mode
+        for player_id in self.player_ids:
+            group = self.hdf5_file.require_group(f'player_{player_id}')
+            # Create extendable datasets
+            if 'states' not in group:
+                group.create_dataset('states', shape=(0, state_dim), maxshape=(None, state_dim), dtype='f')
+            if 'actions' not in group:
+                group.create_dataset('actions', shape=(0,), maxshape=(None,), dtype='i')
+            if 'rewards' not in group:
+                group.create_dataset('rewards', shape=(0,), maxshape=(None,), dtype='f')
+            if 'timesteps' not in group:
+                group.create_dataset('timesteps', shape=(0,), maxshape=(None,), dtype='i')
+
 
     def collect_trajectories(self, n_games):
         """Collect game trajectories for all players"""
@@ -120,9 +135,32 @@ class Big2DecisionTransformerTrainer:
                     
                     # Append trajectories to buffer
                     for player_id in self.player_ids:
-                        if len(current_trajectories[player_id]['states']) > 0:
-                            self.trajectory_buffer[player_id].append(dict(current_trajectories[player_id]))
+                        traj = current_trajectories[player_id]
+                        if len(traj['states']) > 0:
+                            self.trajectory_buffer[player_id].append(dict(traj))
+                            
+                            # Save to HDF5
+                            group = self.hdf5_file[f'player_{player_id}']
+                            states_ds = group['states']
+                            actions_ds = group['actions']
+                            rewards_ds = group['rewards']
+                            timesteps_ds = group['timesteps']
+                            
+                            # Current size
+                            current_size = states_ds.shape[0]
+                            new_size = current_size + len(traj['states'])
+                            
+                            # Resize datasets
+                            states_ds.resize((new_size, self.dt.state_dim))
+                            actions_ds.resize((new_size,))
+                            rewards_ds.resize((new_size,))
+                            timesteps_ds.resize((new_size,))
 
+                            # Write data
+                            states_ds[current_size:new_size, :] = traj['states']
+                            actions_ds[current_size:new_size] = traj['actions']
+                            rewards_ds[current_size:new_size] = traj['rewards']
+                            timesteps_ds[current_size:new_size] = traj['timesteps']
                 
 
     def prepare_batch(self, player):
@@ -210,7 +248,6 @@ class Big2DecisionTransformerTrainer:
             return None  # Not enough data to form a batch
 
         timesteps, states, actions, returns_to_go, attention_mask = batch
-        # print(f"States shape: {states.shape}, Actions shape: {len(actions)}, Returns shape: {returns_to_go.shape}, Timesteps shape: {timesteps.shape}, Mask shape: {attention_mask.shape}")
         self.dt.train()
         self.optimizer.zero_grad()
 
