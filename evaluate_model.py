@@ -36,7 +36,10 @@ class ModelEvaluator:
             drop_p=0.1,
             max_timestep=1000
         ).to(self.device)
-
+        self.state_buffer = [[] for _ in range(4)]
+        self.action_buffer = [[] for _ in range(4)]
+        self.timestep_buffer = [[] for _ in range(4)]
+        self.reward_buffer = [[] for _ in range(4)]
         # Load Decision Transformer weights
         if os.path.exists(best_model_path):
             self.dt.load_state_dict(torch.load(best_model_path, map_location=self.device))
@@ -81,57 +84,87 @@ class ModelEvaluator:
             timestep = 0
             target_reward = 13 # random set number of target reward ,TODO : adjust it to the real target reward 
             while not game_done:
-                current_player, curr_state, curr_avail_actions = game.getCurrentState()
+                current_player, curr_state, curr_avail_actions = game.getCurrentState() # (n_game) , (n_game,1,412) , (n_game,1,1695)
                 print(f"Game {game_num} | Timestep {timestep} | Player {current_player}")
                 state = curr_state[0]  # Remove batch dimension
                 available_actions = curr_avail_actions[0]  # Remove batch dimension
                 if current_player in [1, 3]:  # Decision Transformer players
                     with torch.no_grad():
                         print('decision transformer turn')
-                        # Prepare inputs for the Decision Transformer
-                        # Assuming the DT expects tensors in a specific format
-                        # Adjust as per your DT's forward method
-                        # Here, we use the current state as the context
-                        fixed_seq_length = 1
-                        batch_states = torch.tensor([state], dtype=torch.float32, device=self.device).unsqueeze(0).repeat(1, fixed_seq_length, 1)
-                        batch_actions = torch.zeros((1, fixed_seq_length, self.act_dim), dtype=torch.float32, device=self.device)
-                        batch_rewards = torch.tensor([target_reward], dtype=torch.float32, device=self.device).unsqueeze(0).repeat(1, fixed_seq_length)
-                        batch_timesteps = torch.tensor([timestep], dtype=torch.long, device=self.device).unsqueeze(0).repeat(1, fixed_seq_length)
-                        batch_attention_mask = torch.ones((1, fixed_seq_length), dtype=torch.bool, device=self.device)
+                        state= torch.tensor([state], dtype=torch.float32, device=self.device) # (1,412)
+                        timestep = torch.tensor([timestep], dtype=torch.long, device=self.device)
+                        return_to_go = torch.tensor([target_reward], dtype=torch.float32, device=self.device)
+                        if len(self.state_buffer[current_player - 1]) <1:
+                            seq_length = 1
+                            batch_states = state.unsqueeze(0)
+                            batch_actions = torch.zeros((1, seq_length, self.act_dim), dtype=torch.float32, device=self.device)
+                            batch_rewards = return_to_go.unsqueeze(0)
+                            batch_timesteps = timestep.unsqueeze(0)
+                            # batch_attention_mask = torch.ones((1, seq_length), dtype=torch.bool, device=self.device)
+
+             
+                        else:
+                            seq_length = len(self.state_buffer[current_player - 1])
+    
+                            # Stack states and actions without extra dimensions
+                            batch_states = torch.stack(self.state_buffer[current_player - 1], dim=0).unsqueeze(0)      # Shape: [1, N, 412]
+                            batch_actions = torch.stack(self.action_buffer[current_player - 1], dim=0).unsqueeze(0)    # Shape: [1, N, 1695]
+                            batch_rewards = return_to_go.unsqueeze(0)
+                            # Convert timesteps and rewards lists to tensors
+                            # batch_rewards = torch.tensor(self.reward_buffer[current_player - 1], dtype=torch.float32, device=self.device).unsqueeze(0)    # Shape: [1, N]
+                           
+                            batch_timesteps = torch.tensor(self.timestep_buffer[current_player - 1], dtype=torch.long, device=self.device).unsqueeze(0)    # Shape: [1, N]
 
                         timesteps = batch_timesteps
                         states = batch_states
                         actions = batch_actions
                         returns_to_go = batch_rewards
-                        attention_mask = batch_attention_mask
-                        # attention_mask = torch.ones((1, 1), dtype=torch.bool, device=self.device)
-                        # print(f"Timesteps shape: {timesteps.shape}")
-                        # print(f"States shape: {states.shape}")
-                        # print(f"Actions shape: {actions.shape}")
-                        # print(f"Returns to go shape: {returns_to_go.shape}")
-                        # print(f"Attention mask shape: {attention_mask.shape}")
+                            # attention_mask = batch_attention_mask
+                        
+                        # print(f"Input shapes - Timesteps: {timesteps.shape}, States: {states.shape}, Actions: {actions.shape}, Returns to go: {returns_to_go.shape}")
                         action_probs = self.dt.forward(
                             timesteps=timesteps,
                             states=states,
                             actions=actions,
                             returns_to_go=returns_to_go,
                             # attention_mask=attention_mask
-                        )
+                        ) # Shape: [1, N, 1695]
+                        
+                        action_token = action_probs[0][-1]
                         available_actions_tensor = torch.tensor(available_actions, dtype=torch.float32, device=self.device)
                         # available_actions_tensor = available_actions_tensor.unsqueeze(0).unsqueeze(0)
-                        action_probs = action_probs + available_actions_tensor
+
+                        action_probs = action_token + available_actions_tensor
                         action_probs = torch.softmax(action_probs, dim=-1)
+                       
+                        # prevent always choose pass (comment it if no always pass problem)
                         top_probs, top_indices = torch.topk(action_probs, 2, dim=-1)
 
                         print(f'Top 2 action probabilities: {top_probs.tolist()}')
                         print(f'Top 2 action indices: {top_indices.tolist()}')
-                        max_prob , action_idx = torch.max(action_probs, dim=-1)
+                        max_prob , action_idx = torch.max(action_probs, dim=0)
+             
                         if action_idx.item()== 1694:
-                            action_probs[0][0][1694] = 0.001
+                            action_probs[1694] = 0.001
+
+
+
+                        # predict action
                         max_prob , action = torch.max(action_probs, dim=-1)
 
                         # action = torch.argmax(action_probs, dim=-1).item()
                         print(f'decision transformer action: {action.item()}, max_prob: {max_prob.item()}')
+
+                        # # One-hot encode the action (optional)
+                        action_onehot = torch.zeros(self.act_dim, dtype=torch.float32, device=self.device)
+                        action_onehot[action] = 1.0
+                        # Append to buffers
+                        self.state_buffer[current_player - 1].append(state.squeeze(0))         # Shape: [412]
+                        self.action_buffer[current_player - 1].append(action_onehot)           # Shape: [1695]
+                        # self.action_buffer[current_player - 1].append(action_probs.squeeze(0).squeeze(0))           # Shape: [1695]
+                        self.timestep_buffer[current_player - 1].append(timestep.item())       # Scalar
+                        self.reward_buffer[current_player - 1].append(return_to_go.item())     # Scalar
+
                 else:  # PPO Agent players
                     # curr_state = torch.tensor(curr_state, dtype=torch.float32, device=self.device)
                     # curr_avail_actions = torch.tensor(curr_avail_actions, dtype=torch.float32, device=self.device)
@@ -158,6 +191,12 @@ class ModelEvaluator:
                             ppo_wins += 1
                     else:
                         print(f'error in reward: {reward_list}')
+
+                    #clear buffer
+                    self.state_buffer = [[] for _ in range(4)]
+                    self.action_buffer = [[] for _ in range(4)]
+                    self.timestep_buffer = [[] for _ in range(4)]
+                    self.reward_buffer = [[] for _ in range(4)]
 
                 timestep += 1
 
