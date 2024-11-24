@@ -71,6 +71,7 @@ class PPOGameplayDataset(Dataset):
 
         # Normalize rewards to range [-1, 1]
         rewards = 2 * (rewards - self.min_reward) / (self.max_reward - self.min_reward) - 1
+        rewards[actions == 1694] -= 0.1  # Apply penalty for action 1694
 
         return {
             'states': states,
@@ -187,18 +188,18 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
     }
 
 # if __name__ == "__main__":
-#     # Example usage
-#     dataset = PPOGameplayDataset(hdf5_path='output/pytorch_ppo_trajectories.hdf5')
-#     print(f"Total sequences: {len(dataset)}")
+    # Example usage
+    # dataset = PPOGameplayDataset(hdf5_path='output/pytorch_ppo_trajectories.hdf5')
+    # print(f"Total sequences: {len(dataset)}")
 
-#     # Retrieve a sample
-#     sample = dataset[9]
-#     print(sample['states'].shape)
-#     print(sample['actions'])
-#     print(sample['rewards'])
-#     print(sample['timesteps'].shape)
-#     print(sample['game_id'])
-#     print(sample['player_id'])
+    # # Retrieve a sample
+    # sample = dataset[9]
+    # print(sample['states'].shape)
+    # print(sample['actions'])
+    # print(sample['rewards'])
+    # print(sample['timesteps'].shape)
+    # print(sample['game_id'])
+    # print(sample['player_id'])
 
-# #     # Close the dataset when done
+#     # Close the dataset when done
 # #     dataset.close()

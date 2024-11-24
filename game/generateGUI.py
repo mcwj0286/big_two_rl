@@ -5,8 +5,8 @@ import numpy as np
 import big2Game
 import gameLogic
 import enumerateOptions
-from PPONetwork import PPONetwork, PPOModel
-import tensorflow as tf
+from models.PPONetwork_pytorch import PPONetwork, PPOModel
+import torch
 import joblib
 
 mainGame = big2Game.big2Game()
@@ -16,28 +16,30 @@ outDim = 1695
 entCoef = 0.01
 valCoef = 0.5
 maxGradNorm = 0.5
-sess = tf.Session()
-#networks for players
+
+# Initialize PyTorch-based networks for players
 playerNetworks = {}
-playerNetworks[1] = PPONetwork(sess, inDim, outDim, "p1Net")
-playerNetworks[2] = PPONetwork(sess, inDim, outDim, "p2Net")
-playerNetworks[3] = PPONetwork(sess, inDim, outDim, "p3Net")
-playerNetworks[4] = PPONetwork(sess, inDim, outDim, "p4Net")
+playerNetworks[1] = PPONetwork(inDim, outDim, "p1Net")
+playerNetworks[2] = PPONetwork(inDim, outDim, "p2Net")
+playerNetworks[3] = PPONetwork(inDim, outDim, "p3Net")
+playerNetworks[4] = PPONetwork(inDim, outDim, "p4Net")
+
+# Initialize PyTorch-based PPO models for players
 playerModels = {}
-playerModels[1] = PPOModel(sess, playerNetworks[1], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[2] = PPOModel(sess, playerNetworks[2], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[3] = PPOModel(sess, playerNetworks[3], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[4] = PPOModel(sess, playerNetworks[4], inDim, outDim, entCoef, valCoef, maxGradNorm)
+playerModels[1] = PPOModel(playerNetworks[1], inDim, outDim, entCoef, valCoef, maxGradNorm)
+playerModels[2] = PPOModel(playerNetworks[2], inDim, outDim, entCoef, valCoef, maxGradNorm)
+playerModels[3] = PPOModel(playerNetworks[3], inDim, outDim, entCoef, valCoef, maxGradNorm)
+playerModels[4] = PPOModel(playerNetworks[4], inDim, outDim, entCoef, valCoef, maxGradNorm)
 
+# Load PyTorch model weights
+def load_model_weights():
+    params = torch.load("modelParameters136500.pth")  # Update file extension if necessary
+    playerNetworks[1].load_state_dict(params["p1Net"])
+    playerNetworks[2].load_state_dict(params["p2Net"])
+    playerNetworks[3].load_state_dict(params["p3Net"])
+    playerNetworks[4].load_state_dict(params["p4Net"])
 
-tf.global_variables_initializer().run(session=sess)
-
-#by default load current best
-params = joblib.load("modelParameters136500")
-playerNetworks[1].loadParams(params)
-playerNetworks[2].loadParams(params)
-playerNetworks[3].loadParams(params)
-playerNetworks[4].loadParams(params)
+load_model_weights()
 
 top=tkinter.Tk()
 
@@ -274,14 +276,18 @@ def updateScreen():
     
 def updateValue():
     go, state, actions = mainGame.getCurrentState()
-    val = playerNetworks[go].value(state, actions)
-    valueValue.set(str(val[0]))
+    state_tensor = torch.tensor(state, dtype=torch.float32)
+    actions_tensor = torch.tensor(actions, dtype=torch.float32)
+    val = playerNetworks[go].value(state_tensor, actions_tensor)
+    valueValue.set(str(val.item()))
     
 def updateProbNegLog(index):
     go, state, actions = mainGame.getCurrentState()
-    nlp = playerModels[go].neglogp(state, actions, np.array([index]))
-    prob = np.exp(-nlp)
-    probNegLogValue.set(str(prob[0]))
+    state_tensor = torch.tensor(state, dtype=torch.float32)
+    actions_tensor = torch.tensor(actions, dtype=torch.float32)
+    nlp = playerModels[go].neglogp(state_tensor, actions_tensor, torch.tensor([index], dtype=torch.long))
+    prob = torch.exp(-nlp)
+    probNegLogValue.set(str(prob.item()))
         
     
 def updateOptions():
@@ -321,26 +327,27 @@ def sampleFromNetwork():
     global currSampledOption
     
     go, state, actions = mainGame.getCurrentState()
-    (a, v, nlp) = playerNetworks[go].step(state, actions)
-    currSampledOption = a[0]
-    if a==enumerateOptions.passInd:
+    state_tensor = torch.tensor(state, dtype=torch.float32)
+    actions_tensor = torch.tensor(actions, dtype=torch.float32)
+    with torch.no_grad():
+        a, v, nlp = playerNetworks[go].step(state_tensor, actions_tensor)
+    currSampledOption = a.item()
+    if a.item() == enumerateOptions.passInd:
         sampledOptionValue.set("pass")
     else:
-        ind, nC = enumerateOptions.getOptionNC(a)
-        if nC==1:
+        ind, nC = enumerateOptions.getOptionNC(a.item())
+        if nC == 1:
             option = ind
-        elif nC==2:
-            option = enumerateOptions.inverseTwoCardIndices[ind[0]]
-        elif nC==3:
-            option = enumerateOptions.inverseThreeCardIndices[ind[0]]
-        elif nC==4:
-            option = enumerateOptions.inverseFourCardIndices[ind[0]]
-        elif nC==5:
-            option = enumerateOptions.inverseFiveCardIndices[ind[0]]
-        optString = ""
-        for i in range(len(option)):
-            optString = optString + str(option[i]) + " "
-        sampledOptionValue.set(str(optString))
+        elif nC == 2:
+            option = enumerateOptions.inverseTwoCardIndices[ind]
+        elif nC == 3:
+            option = enumerateOptions.inverseThreeCardIndices[ind]
+        elif nC == 4:
+            option = enumerateOptions.inverseFourCardIndices[ind]
+        elif nC == 5:
+            option = enumerateOptions.inverseFiveCardIndices[ind]
+        optString = " ".join(map(str, option))
+        sampledOptionValue.set(optString)
 
 def onOptionSelect(evt):
     w = evt.widget
