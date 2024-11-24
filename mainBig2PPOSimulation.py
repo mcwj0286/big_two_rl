@@ -45,7 +45,7 @@ class big2PPOSimulation(object):
         save_every=500,         # Save model every 'n' updates
     ):
         # Initialize PPO network and model for training
-        self.training_network = PPONetwork(inp_dim, 1695)  # PPONetwork with input dim and action space size
+        self.training_network = PPONetwork(inp_dim, 1695,device='cpu')  # PPONetwork with input dim and action space size
         self.training_model = PPOModel(
             self.training_network,
             ent_coef=ent_coef,
@@ -129,7 +129,7 @@ class big2PPOSimulation(object):
         for _ in range(self.n_steps):
             # Get current game states, available actions from the environment
             curr_gos, curr_states, curr_avail_acs = self.vectorized_game.getCurrStates()
-            print(f'curr_gos: {curr_gos.shape},curr_states: {curr_states.shape}, curr_avail_acs: {curr_avail_acs.shape}')
+            # print(f'curr_gos: {curr_gos.shape},curr_states: {curr_states.shape}, curr_avail_acs: {curr_avail_acs.shape}')
             curr_states = np.squeeze(curr_states)
             curr_avail_acs = np.squeeze(curr_avail_acs)
             curr_gos = np.squeeze(curr_gos)
@@ -285,6 +285,7 @@ class big2PPOSimulation(object):
             # Save the model and training stats periodically
             if len(self.losses) > 1 and lossvals[0] < self.losses[-2][0]:
                 name = f"output/modelParameters_best.pt"
+                print(f"Saving model to {name}")
                 torch.save(self.training_network.state_dict(), name)
                 joblib.dump(self.losses, "output/losses.pkl")
                 joblib.dump(self.ep_infos, "output/epInfos.pkl")
@@ -300,6 +301,6 @@ if __name__ == "__main__":
     # Initialize the PPO simulation with specified parameters
     main_sim = big2PPOSimulation(n_games=64, n_steps=20, learning_rate=2.5e-4, clip_range=0.2)
     start = time.time()  # Start timer
-    main_sim.train(100000)  # Begin training for a large number of steps
+    main_sim.train(10000000)  # Begin training for a large number of steps
     end = time.time()  # End timer
     print(f"Time Taken: {end - start}")  # Print total training time
