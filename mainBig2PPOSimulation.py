@@ -166,7 +166,7 @@ class big2PPOSimulation(object):
                     mb_dones[-4][i] = True
                     self.ep_infos.append(infos[i])  # Store episode info
                     self.games_done += 1
-                    print(f"Game {self.games_done} finished. Lasted {infos[i]['numTurns']} turns")
+                    # print(f"Game {self.games_done} finished. Lasted {infos[i]['numTurns']} turns")
 
         # Update previous observations and related data with the latest
         self.prev_obs = mb_obs[end_length:]
@@ -256,13 +256,13 @@ class big2PPOSimulation(object):
                     mb_values = torch.tensor(values[mb_inds], dtype=torch.float32)
                     mb_neglogpacs = torch.tensor(neglogpacs[mb_inds], dtype=torch.float32)
 
-                    # Log minibatch shapes for debugging
-                    print(f"Minibatch states: {mb_states.shape}")
-                    print(f"Minibatch available actions: {mb_avail_acs.shape}")
-                    print(f"Minibatch returns: {mb_returns.shape}")
-                    print(f"Minibatch actions: {mb_actions.shape}")
-                    print(f"Minibatch values: {mb_values.shape}")
-                    print(f"Minibatch neglogpacs: {mb_neglogpacs.shape}")
+                    # # Log minibatch shapes for debugging
+                    # print(f"Minibatch states: {mb_states.shape}")
+                    # print(f"Minibatch available actions: {mb_avail_acs.shape}")
+                    # print(f"Minibatch returns: {mb_returns.shape}")
+                    # print(f"Minibatch actions: {mb_actions.shape}")
+                    # print(f"Minibatch values: {mb_values.shape}")
+                    # print(f"Minibatch neglogpacs: {mb_neglogpacs.shape}")
 
                     # Update the PPO model with the minibatch
                     pg_loss, vf_loss, entropy_loss = self.training_model.train(
@@ -276,20 +276,23 @@ class big2PPOSimulation(object):
                         mb_neglogpacs,
                     )
                     mb_lossvals.append([pg_loss, vf_loss, entropy_loss])
-                    break  # Exit after first minibatch (remove if processing all)
-
-            break  # Exit after first update (remove to enable full training)
+                   
 
             # Calculate mean loss over minibatches
             lossvals = np.mean(mb_lossvals, axis=0)
             self.losses.append(lossvals)  # Store loss values
-
+            print(f"Update: {update}, Loss: {lossvals}")
             # Save the model and training stats periodically
-            if update % self.save_every == 0:
-                name = f"output/modelParameters{update}.pt"
-                torch.save(self.training_network.state_dict(), name)  # Save model parameters
-                joblib.dump(self.losses, "output/losses.pkl")        # Save loss history
-                joblib.dump(self.ep_infos, "output/epInfos.pkl")    # Save episode info
+            if len(self.losses) > 1 and lossvals[0] < self.losses[-2][0]:
+                name = f"output/modelParameters_best.pt"
+                torch.save(self.training_network.state_dict(), name)
+                joblib.dump(self.losses, "output/losses.pkl")
+                joblib.dump(self.ep_infos, "output/epInfos.pkl")
+            # if update % self.save_every == 0:
+            #     name = f"output/modelParameters_best.pt"
+            #     torch.save(self.training_network.state_dict(), name)  # Save model parameters
+            #     joblib.dump(self.losses, "output/losses.pkl")        # Save loss history
+            #     joblib.dump(self.ep_infos, "output/epInfos.pkl")    # Save episode info
 
 if __name__ == "__main__":
     import time
@@ -297,6 +300,6 @@ if __name__ == "__main__":
     # Initialize the PPO simulation with specified parameters
     main_sim = big2PPOSimulation(n_games=64, n_steps=20, learning_rate=2.5e-4, clip_range=0.2)
     start = time.time()  # Start timer
-    main_sim.train(1000000000)  # Begin training for a large number of steps
+    main_sim.train(100000)  # Begin training for a large number of steps
     end = time.time()  # End timer
     print(f"Time Taken: {end - start}")  # Print total training time
