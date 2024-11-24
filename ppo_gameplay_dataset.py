@@ -76,7 +76,7 @@ class PPOGameplayDataset(Dataset):
         if self.file:
             self.file.close()
 
-def collate_fn(batch, fixed_seq_length=21, act_dim=1695):
+def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
     """
     Custom collate function to pad/truncate sequences, generate attention masks,
     and convert actions to one-hot encoding.
