@@ -78,7 +78,7 @@ class ModelEvaluator:
             game.reset()
             game_done = False
             timestep = 0
-            target_reward = 13 # random set number of target reward ,TODO : adjust it to the real target reward 
+            target_reward = 1 # random set number of target reward ,TODO : adjust it to the real target reward 
             while not game_done:
                 current_player, curr_state, curr_avail_actions = game.getCurrentState() # (n_game) , (n_game,1,412) , (n_game,1,1695)
                 # print(f"Game {game_num} | Timestep {timestep} | Player {current_player}")
@@ -132,10 +132,8 @@ class ModelEvaluator:
                         masked_logits = action_logits + available_actions_tensor
 
                         # Select the action with the highest logit among available actions
-                        # action = torch.argmax(masked_logits).item()
-                        
-                        if action ==1694:
-                            
+                        action = torch.argmax(masked_logits).item()
+                    
 
                         # Append to buffers
                         self.state_buffer[current_player - 1].append(state.squeeze(0))

@@ -78,14 +78,14 @@ def train_decision_transformer(
             returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
 
             # use sparse reward
-            rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
+            # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
 
             # Forward pass
             action_preds = model(
                 timesteps=timesteps,
                 states=states,
                 actions=actions,
-                returns_to_go=rewards,
+                returns_to_go=returns_to_go,
                 # attention_mask=attention_mask
             )
 

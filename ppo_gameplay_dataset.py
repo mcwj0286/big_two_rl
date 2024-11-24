@@ -19,6 +19,15 @@ class PPOGameplayDataset(Dataset):
         self.sequences_group = self.file['sequences']
         self.sequence_names = list(self.sequences_group.keys())
 
+        # Compute min and max rewards for normalization
+        all_rewards = []
+        for seq_name in self.sequence_names:
+            seq_group = self.sequences_group[seq_name]
+            rewards = seq_group['rewards'][:]
+            all_rewards.extend(rewards)
+        self.min_reward = min(all_rewards)
+        self.max_reward = max(all_rewards)
+
     def __len__(self):
         """
         Returns the total number of sequences in the dataset.
@@ -36,7 +45,7 @@ class PPOGameplayDataset(Dataset):
             dict: A dictionary containing the following keys:
                 - 'states' (torch.FloatTensor): Tensor of shape (sequence_length, state_dim)
                 - 'actions' (torch.LongTensor): Tensor of shape (sequence_length,)
-                - 'rewards' (torch.FloatTensor): Tensor of shape (sequence_length,)
+                - 'rewards' (torch.FloatTensor): Normalized tensor of shape (sequence_length,)
                 - 'timesteps' (torch.LongTensor): Tensor of shape (sequence_length,)
                 - 'game_id' (torch.LongTensor): Tensor containing the game ID
                 - 'player_id' (torch.LongTensor): Tensor containing the player ID
@@ -59,6 +68,9 @@ class PPOGameplayDataset(Dataset):
         timesteps = torch.tensor(timesteps, dtype=torch.long)
         game_id = torch.tensor(game_id, dtype=torch.long)
         player_id = torch.tensor(player_id, dtype=torch.long)
+
+        # Normalize rewards to range [-1, 1]
+        rewards = 2 * (rewards - self.min_reward) / (self.max_reward - self.min_reward) - 1
 
         return {
             'states': states,
