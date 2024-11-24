@@ -30,8 +30,8 @@ class PPO_gameplay_collect:
         learning_rate=1e-4,
         max_ep_len=200,
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        hdf5_path='trajectories.hdf5', # Path to HDF5 file
-        ppo_model_path='output/modelParameters_best.py'  # Path to PPO model
+        hdf5_path='output/pytorch_ppo_trajectories.hdf5', # Path to HDF5 file
+        ppo_model_path='output/modelParameters_best.pt'  # Path to PPO model
     ):
         self.best_loss = float('inf')
         self.best_model_path = 'best_dt_model.pt'
@@ -127,12 +127,12 @@ class PPO_gameplay_collect:
             for player_id in self.player_ids:
                 traj = current_trajectories[player_id]
                 if len(traj['states']) > 0:
-                    print(f"Game {game_num}, Player {player_id}: {len(traj['states'])} steps")
-                    if len(traj['states'])>20:
-                        print(f"exeed 20 : States : {len(traj['states'])}")  
+                    # print(f"Game {game_num}, Player {player_id}: {len(traj['states'])} steps")
+                    # if len(traj['states'])>20:
+                    #     print(f"exeed 20 : States : {len(traj['states'])}")  
                     # print(f"States shape: {traj['states'].shape}")
                     # Save the full trajectory as a single sequence
-                    # self.save_sequence(traj, game_num, player_id)
+                    self.save_sequence(traj, game_num, player_id)
 
         print("Finished collecting trajectories.")
         # Close the HDF5 file after collection

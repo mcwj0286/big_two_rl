@@ -4,32 +4,35 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
-def analyze_trajectories(hdf5_path='output/trajectories.hdf5', act_dim=1695):
-    # Open the HDF5 file in read mode
+def analyze_trajectories(hdf5_path='output/pytorch_ppo_trajectories.hdf5', act_dim=1695):
+    """Analyze game trajectories stored in the updated HDF5 structure."""
+    
     with h5py.File(hdf5_path, 'r') as h5file:
+        sequences_group = h5file['sequences']
         player_ids = [1, 2, 3, 4]
         total_action_counts = np.zeros(act_dim, dtype=np.int64)
+        player_action_counts = {pid: np.zeros(act_dim, dtype=np.int64) for pid in player_ids}
+        
+        for seq_name in sequences_group:
+            seq = sequences_group[seq_name]
+            actions = seq['actions'][:]
+            player_id = seq.attrs['player_id']
+            
+            if player_id in player_ids:
+                player_action_counts[player_id] += np.bincount(actions, minlength=act_dim)
+                total_action_counts += np.bincount(actions, minlength=act_dim)
+        
         for player_id in player_ids:
-            group_name = f'player_{player_id}'
-            if group_name in h5file:
-                group = h5file[group_name]
-                if 'actions' in group:
-                    actions = group['actions'][:]
-                    action_counts = np.bincount(actions, minlength=act_dim)
-                    total_actions = len(actions)
-                    print(f"\nPlayer {player_id} - Total Actions: {total_actions}")
-                    print(f"Most Common Actions for Player {player_id}:")
-                    top_actions = np.argsort(-action_counts)[:5]
-                    for a in top_actions:
-                        count = action_counts[a]
-                        percentage = (count / total_actions) * 100
-                        print(f"Action {a}: {count} times ({percentage:.2f}%)")
-                    # Add to total action counts
-                    total_action_counts += action_counts
-                else:
-                    print(f"No actions data for player {player_id}")
-            else:
-                print(f"No data for player {player_id}")
+            actions = player_action_counts[player_id]
+            total = actions.sum()
+            print(f"\nPlayer {player_id} - Total Actions: {total}")
+            top_actions = np.argsort(-actions)[:5]
+            print(f"Most Common Actions for Player {player_id}:")
+            for a in top_actions:
+                count = actions[a]
+                percentage = (count / total) * 100
+                print(f"Action {a}: {count} times ({percentage:.2f}%)")
+        
         # Overall action distribution
         total_actions = total_action_counts.sum()
         print("\nOverall Action Distribution:")
@@ -38,6 +41,7 @@ def analyze_trajectories(hdf5_path='output/trajectories.hdf5', act_dim=1695):
             count = total_action_counts[a]
             percentage = (count / total_actions) * 100
             print(f"Action {a}: {count} times ({percentage:.2f}%)")
+        
         # Plot the action distribution
         plt.figure(figsize=(12,6))
         plt.bar(np.arange(act_dim), total_action_counts)
@@ -47,7 +51,7 @@ def analyze_trajectories(hdf5_path='output/trajectories.hdf5', act_dim=1695):
         plt.show()
 
 if __name__ == "__main__":
-    analyze_trajectories(hdf5_path='output/split_trajectories/trajectories_part_1.hdf5', act_dim=1695)
+    analyze_trajectories(hdf5_path='output/pytorch_ppo_trajectories.hdf5', act_dim=1695)
 #%%
 import h5py
 import os 

@@ -194,7 +194,7 @@ def collate_fn(batch, fixed_seq_length=21, act_dim=1695):
 
 # if __name__ == "__main__":
 #     # Example usage
-#     dataset = PPOGameplayDataset(hdf5_path='trajectories.hdf5')
+#     dataset = PPOGameplayDataset(hdf5_path='output/pytorch_ppo_trajectories.hdf5')
 #     print(f"Total sequences: {len(dataset)}")
 
 #     # Retrieve a sample
@@ -206,5 +206,5 @@ def collate_fn(batch, fixed_seq_length=21, act_dim=1695):
 #     print(sample['game_id'])
 #     print(sample['player_id'])
 
-#     # Close the dataset when done
-#     dataset.close()
+# #     # Close the dataset when done
+# #     dataset.close()
