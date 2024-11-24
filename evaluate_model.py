@@ -1,4 +1,3 @@
-
 # evaluate_model.py
 
 import os
@@ -94,7 +93,7 @@ class ModelEvaluator:
                         if len(self.state_buffer[current_player - 1]) <1:
                             seq_length = 1
                             batch_states = state.unsqueeze(0)
-                            batch_actions = torch.zeros((1, seq_length, self.act_dim), dtype=torch.float32, device=self.device)
+                            batch_actions = torch.zeros((1, seq_length), dtype=torch.long, device=self.device)  # Changed to LongTensor
                             batch_rewards = return_to_go.unsqueeze(0).unsqueeze(0)
                             batch_timesteps = timestep.unsqueeze(0)
                             # batch_attention_mask = torch.ones((1, seq_length), dtype=torch.bool, device=self.device)
@@ -105,7 +104,7 @@ class ModelEvaluator:
     
                             # Stack states and actions without extra dimensions
                             batch_states = torch.stack(self.state_buffer[current_player - 1], dim=0).unsqueeze(0)      # Shape: [1, N, 412]
-                            batch_actions = torch.stack(self.action_buffer[current_player - 1], dim=0).unsqueeze(0)    # Shape: [1, N, 1695]
+                            batch_actions = torch.stack(self.action_buffer[current_player - 1], dim=0).unsqueeze(0)    # Ensure LongTensor
                             batch_rewards = torch.stack(self.reward_buffer[current_player - 1], dim=0).unsqueeze(0)    # Shape: [1, N]
                             # Convert timesteps and rewards lists to tensors
                             # batch_rewards = torch.tensor(self.reward_buffer[current_player - 1], dtype=torch.float32, device=self.device).unsqueeze(0)    # Shape: [1, N]
@@ -114,53 +113,35 @@ class ModelEvaluator:
 
                         timesteps = batch_timesteps
                         states = batch_states
-                        actions = batch_actions
+                        actions = batch_actions  # Actions tensor is now LongTensor
                         returns_to_go = batch_rewards
                             # attention_mask = batch_attention_mask
                         
                         # print(f"Input shapes - Timesteps: {timesteps.shape}, States: {states.shape}, Actions: {actions.shape}, Returns to go: {returns_to_go.shape}")
-                        action_probs = self.dt.forward(
+                        action_logits = self.dt.forward(
                             timesteps=timesteps,
                             states=states,
                             actions=actions,
                             returns_to_go=returns_to_go,
-                            # attention_mask=attention_mask
-                        ) # Shape: [1, N, 1695]
-                        
-                        action_token = action_probs[0][-1]
+                        )  # Shape: [1, N, act_dim]
+
+                        action_logits = action_logits[0, -1]  # Get the last timestep
                         available_actions_tensor = torch.tensor(available_actions, dtype=torch.float32, device=self.device)
-                        # available_actions_tensor = available_actions_tensor.unsqueeze(0).unsqueeze(0)
 
-                        action_probs = action_token + available_actions_tensor
-                        action_probs = torch.softmax(action_probs, dim=-1)
-                       
-                        # prevent always choose pass (comment it if no always pass problem)
-                        # top_probs, top_indices = torch.topk(action_probs, 2, dim=-1)
+                        # Add available actions mask
+                        masked_logits = action_logits + available_actions_tensor
 
-                        # print(f'Top 2 action probabilities: {top_probs.tolist()}')
-                        # print(f'Top 2 action indices: {top_indices.tolist()}')
-                        max_prob , action_idx = torch.max(action_probs, dim=0)
-             
-                        if action_idx.item()== 1694:
-                            action_probs[1694] = 0.001
+                        # Select the action with the highest logit among available actions
+                        # action = torch.argmax(masked_logits).item()
+                        
+                        if action ==1694:
+                            
 
-
-
-                        # predict action
-                        max_prob , action = torch.max(action_probs, dim=-1)
-
-                        # action = torch.argmax(action_probs, dim=-1).item()
-                        # print(f'decision transformer action: {action.item()}, max_prob: {max_prob.item()}')
-
-                        # # One-hot encode the action (optional)
-                        action_onehot = torch.zeros(self.act_dim, dtype=torch.float32, device=self.device)
-                        action_onehot[action] = 1.0
                         # Append to buffers
-                        self.state_buffer[current_player - 1].append(state.squeeze(0))         # Shape: [412]
-                        self.action_buffer[current_player - 1].append(action_onehot)           # Shape: [1695]
-                        # self.action_buffer[current_player - 1].append(action_probs.squeeze(0).squeeze(0))           # Shape: [1695]
-                        self.timestep_buffer[current_player - 1].append(timestep.item())       # Scalar
-                        self.reward_buffer[current_player - 1].append(return_to_go)     # [1,1]
+                        self.state_buffer[current_player - 1].append(state.squeeze(0))
+                        self.action_buffer[current_player - 1].append(torch.tensor(action, dtype=torch.long, device=self.device))  # Ensure LongTensor
+                        self.timestep_buffer[current_player - 1].append(timestep)
+                        self.reward_buffer[current_player - 1].append(return_to_go)
 
                 else:  # PPO Agent players
                     # curr_state = torch.tensor(curr_state, dtype=torch.float32, device=self.device)

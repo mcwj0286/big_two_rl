@@ -57,10 +57,8 @@ def train_decision_transformer(
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
     # Define loss function
-    # criterion = nn.CrossEntropyLoss(ignore_index=-1)  # Ignore padding index
-    # criterion = nn.BCEWithLogitsLoss()
-    # Define loss function
-    criterion = nn.MSELoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=-1)
+
     # Training loop
     model.train()
     best_win_rate = 0
@@ -80,14 +78,14 @@ def train_decision_transformer(
             returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
 
             # use sparse reward
-            # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
+            rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
 
             # Forward pass
             action_preds = model(
                 timesteps=timesteps,
                 states=states,
                 actions=actions,
-                returns_to_go=returns_to_go,
+                returns_to_go=rewards,
                 # attention_mask=attention_mask
             )
 
@@ -96,19 +94,23 @@ def train_decision_transformer(
             # print(f"Action preds shape: {action_preds.shape}")
             # Reshape for loss computation
             B, T, act_dim = action_preds.shape
-            action_preds = action_preds.view(B * T, act_dim)
-            actions_target = actions.view(B * T, act_dim)
+            action_preds = action_preds.view(B * T, act_dim)      # Shape: (B*T, act_dim)
+            actions_target = actions.view(B * T)                  # Shape: (B*T)
 
             # Apply attention mask
             attention_mask = attention_mask.view(B * T).bool() 
             
             action_preds_valid = action_preds[attention_mask]
             actions_target_valid = actions_target[attention_mask]
-            # print(f'check masking')
-            # print(action_preds_valid[-1])
-            # print(actions_target_valid[-1])
-            # print(f"Action preds valid shape: {action_preds_valid.shape}")
-            # print(f"Actions target valid shape: {actions_target_valid.shape}")
+
+            # Filter out padded action targets (equal to act_dim)
+            valid_indices = actions_target_valid != act_dim
+            action_preds_valid = action_preds_valid[valid_indices]
+            actions_target_valid = actions_target_valid[valid_indices]
+
+            if action_preds_valid.size(0) == 0:
+                continue  # Skip this batch if no valid data
+
             # # Compute loss
             loss = criterion(action_preds_valid, actions_target_valid)
             # print(f"Loss: {loss.item()}")

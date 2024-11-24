@@ -34,38 +34,47 @@ class MaskedCausalAttention(nn.Module):
         self.att_drop = nn.Dropout(drop_p)
         self.proj_drop = nn.Dropout(drop_p)
 
-        ones = torch.ones((max_T, max_T))
-        mask = torch.tril(ones).view(1, 1, max_T, max_T)
-
-        # register buffer makes sure mask does not get updated
-        # during backpropagation
-        self.register_buffer('mask',mask)
+        # Create a causal mask with ones on the diagonal and below
+        mask = torch.tril(torch.ones((max_T, max_T), dtype=torch.bool))
+        self.register_buffer('mask', mask)
 
     def forward(self, x):
-        B, T, C = x.shape # batch size, seq length, h_dim * n_heads
+        B, T, C = x.shape  # Batch size, sequence length, hidden dimension
 
-        N, D = self.n_heads, C // self.n_heads # N = num heads, D = attention dim
+        if T == 0:
+            return x  # Return input as is if sequence length is zero
 
-        # rearrange q, k, v as (B, N, T, D)
-        q = self.q_net(x).view(B, T, N, D).transpose(1,2)
-        k = self.k_net(x).view(B, T, N, D).transpose(1,2)
-        v = self.v_net(x).view(B, T, N, D).transpose(1,2)
+        N, D = self.n_heads, C // self.n_heads  # Number of heads, dimension per head
 
-        # weights (B, N, T, T)
-        weights = q @ k.transpose(2,3) / math.sqrt(D)
-        # causal mask applied to weights
-        weights = weights.masked_fill(self.mask[...,:T,:T] == 0, float('-inf'))
-        # normalize weights, all -inf -> 0 after softmax
+        # Linear projections and reshape
+        q = self.q_net(x).view(B, T, N, D).transpose(1, 2)  # Shape: (B, N, T, D)
+        k = self.k_net(x).view(B, T, N, D).transpose(1, 2)
+        v = self.v_net(x).view(B, T, N, D).transpose(1, 2)
+
+        # Compute scaled dot-product attention
+        weights = q @ k.transpose(-2, -1) / math.sqrt(D)  # Shape: (B, N, T, T)
+
+        # Apply causal mask
+        causal_mask = self.mask[:T, :T]  # Adjust mask to current sequence length T
+        weights = weights.masked_fill(~causal_mask, float('-inf'))
+
+        # Replace -inf with a large negative number to avoid NaNs in softmax
+        weights = torch.clamp(weights, max=1e4)
+
+        # Compute softmax over the last dimension
         normalized_weights = F.softmax(weights, dim=-1)
 
-        # attention (B, N, T, D)
-        attention = self.att_drop(normalized_weights @ v)
+        # Replace any NaNs with zeros
+        normalized_weights = torch.nan_to_num(normalized_weights)
 
-        # gather heads and project (B, N, T, D) -> (B, T, N*D)
-        attention = attention.transpose(1, 2).contiguous().view(B,T,N*D)
+        # Compute attention output
+        attention = self.att_drop(normalized_weights @ v)  # Shape: (B, N, T, D)
 
+        # Concatenate heads and project
+        attention = attention.transpose(1, 2).reshape(B, T, N * D)
         out = self.proj_drop(self.proj_net(attention))
-        return out
+
+        return x + out  # Residual connection
 
 
 class Block(nn.Module):
@@ -110,19 +119,16 @@ class DecisionTransformer(nn.Module):
         self.embed_rtg = torch.nn.Linear(1, h_dim)
         self.embed_state = torch.nn.Linear(state_dim, h_dim)
 
-        # # discrete actions
-        # self.embed_action = torch.nn.Embedding(act_dim, h_dim)
-        # use_action_tanh = False # False for discrete actions
-
-        # continuous actions
-        self.embed_action = torch.nn.Linear(act_dim, h_dim)
-        use_action_tanh = True # True for continuous actions
+        # Update act_dim and set padding_idx
+        self.embed_action = torch.nn.Embedding(act_dim + 1, h_dim, padding_idx=act_dim)
+        use_action_tanh = False  # False for discrete actions
 
         ### prediction heads
         self.predict_rtg = torch.nn.Linear(h_dim, 1)
         self.predict_state = torch.nn.Linear(h_dim, state_dim)
         self.predict_action = nn.Sequential(
-            *([nn.Linear(h_dim, act_dim)] + ([nn.Tanh()] if use_action_tanh else []))
+            torch.nn.Linear(h_dim, act_dim)
+            # Removed Tanh activation for discrete actions
         )
 
 
@@ -134,7 +140,7 @@ class DecisionTransformer(nn.Module):
 
         # time embeddings are treated similar to positional embeddings
         state_embeddings = self.embed_state(states) + time_embeddings
-        action_embeddings = self.embed_action(actions) + time_embeddings
+        action_embeddings = self.embed_action(actions) + time_embeddings  # Updated to use Embedding
         returns_embeddings = self.embed_rtg(returns_to_go) + time_embeddings
 
         # stack rtg, states and actions and reshape sequence as

@@ -120,10 +120,13 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
                 torch.zeros(pad_size, sample['states'].size(1), dtype=torch.float32)
             ], dim=0)
 
-            # Pad actions with -1 (assuming -1 is the padding index)
+            # Use act_dim as padding index
+            padding_value = act_dim  # Valid index for padding
+
+            # Pad actions with the padding index
             actions = torch.cat([
                 sample['actions'],
-                torch.full((pad_size,), -1, dtype=torch.long)
+                torch.full((pad_size,), padding_value, dtype=torch.long)
             ], dim=0)
 
             # Pad rewards with zeros
@@ -144,29 +147,8 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
                 torch.zeros(pad_size, dtype=torch.long)
             ], dim=0)
 
-        # One-Hot Encode Actions
-        # Initialize one-hot tensor with zeros
-        one_hot_actions = torch.zeros(fixed_seq_length, act_dim, dtype=torch.float32)
-
-        # Create a mask for valid actions (actions >= 0)
-        valid_mask = actions >= 0
-
-        # Get valid action indices
-        valid_actions = actions[valid_mask]
-
-        # Perform one-hot encoding for valid actions
-        if valid_actions.dim() == 0:
-            # Handle the case when there's only one valid action
-            valid_actions = valid_actions.unsqueeze(0)
-            valid_mask = valid_mask.unsqueeze(0)
-
-        one_hot = F.one_hot(valid_actions, num_classes=act_dim).float()
-
-        # Assign one-hot vectors to the initialized tensor
-        one_hot_actions[valid_mask] = one_hot
-
         padded_states.append(states)
-        padded_actions.append(one_hot_actions)  # Now shape: (fixed_seq_length, act_dim)
+        padded_actions.append(actions)
         padded_rewards.append(rewards)
         padded_timesteps.append(timesteps)
         attention_masks.append(attn_mask)
@@ -175,7 +157,7 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
 
     # Stack all padded tensors
     batch_states = torch.stack(padded_states)           # Shape: (B, fixed_seq_length, state_dim)
-    batch_actions = torch.stack(padded_actions)         # Shape: (B, fixed_seq_length, act_dim)
+    batch_actions = torch.stack(padded_actions)         # Shape: (B, fixed_seq_length)
     batch_rewards = torch.stack(padded_rewards)         # Shape: (B, fixed_seq_length)
     batch_timesteps = torch.stack(padded_timesteps)     # Shape: (B, fixed_seq_length)
     batch_attention_mask = torch.stack(attention_masks) # Shape: (B, fixed_seq_length)
@@ -184,7 +166,7 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
 
     return {
         'states': batch_states,                 # (B, fixed_seq_length, state_dim)
-        'actions': batch_actions,               # (B, fixed_seq_length, act_dim)
+        'actions': batch_actions,               # (B, fixed_seq_length)
         'rewards': batch_rewards,               # (B, fixed_seq_length)
         'timesteps': batch_timesteps,           # (B, fixed_seq_length)
         'attention_mask': batch_attention_mask, # (B, fixed_seq_length)
