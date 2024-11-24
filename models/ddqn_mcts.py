@@ -7,8 +7,8 @@ from collections import deque, namedtuple
 import copy
 
 # Constants
-STATE_SIZE = 4 * 4 * 15  # 4 planes x 4 colors x 15 card types
-ACTION_SIZE = 61
+STATE_SIZE = 412 # Size of state vector
+ACTION_SIZE = 1695 # Number of possible actions
 BATCH_SIZE = 32
 GAMMA = 0.99
 EPSILON_START = 1.0
@@ -22,46 +22,7 @@ UPDATE_TARGET_EVERY = 100  # Episodes between target network updates
 
 Experience = namedtuple('Experience', ['state', 'action', 'reward', 'next_state', 'done'])
 
-class UnoStateEncoder:
-    """Handles state encoding for Uno game"""
-    def __init__(self):
-        self.num_colors = 4
-        self.num_card_types = 15
-        
-    def encode_state(self, player_hand, target_card):
-        """Encode game state into neural network input format"""
-        state = np.zeros((4, 4, 15))
-        
-        # Encode player's hand (3 planes for 0, 1, or 2+ cards)
-        hand_count = self._count_cards(player_hand)
-        for (color_idx, card_type_idx), count in hand_count.items():
-            plane_idx = min(count - 1, 2)
-            state[plane_idx][color_idx][card_type_idx] = 1
-            
-        # Encode target card (4th plane)
-        color_idx, card_type_idx = self._get_card_indices(target_card)
-        state[3][color_idx][card_type_idx] = 1
-        
-        return state.flatten()
-    
-    def _count_cards(self, cards):
-        count_dict = {}
-        for card in cards:
-            indices = self._get_card_indices(card)
-            count_dict[indices] = count_dict.get(indices, 0) + 1
-        return count_dict
-    
-    def _get_card_indices(self, card):
-        """Convert card to color and type indices"""
-        # This would need to be implemented based on your specific card representation
-        color_map = {'red': 0, 'green': 1, 'blue': 2, 'yellow': 3}
-        type_map = {str(i): i for i in range(10)}
-        type_map.update({
-            'skip': 10, 'reverse': 11, 'draw2': 12,
-            'wild': 13, 'wild_draw4': 14
-        })
-        
-        return color_map[card.color], type_map[card.type]
+
 
 class QNetwork(nn.Module):
     """Neural network for Q-value prediction"""
@@ -261,21 +222,40 @@ class DDQNwithMCTS:
         
         return total_reward
     
-    # Helper methods to be implemented based on your Uno environment
     def is_terminal(self, state):
-        raise NotImplementedError
-        
+        # Check if any player has no cards left
+        return np.any([len(player_cards) == 0 for player_cards in state['hands'].values()])
+    
     def get_current_player(self, state):
-        raise NotImplementedError
-        
+        return state['current_player']
+    
     def get_legal_actions(self, state):
-        raise NotImplementedError
-        
+        # Convert the available actions mask to indices
+        return np.where(state['available_actions'] == 1)[0]
+    
     def simulate_step(self, state, action, player_id):
-        raise NotImplementedError
-        
+        # Create a copy of the state and simulate the action
+        new_state = copy.deepcopy(state)
+        opt, n_cards = self.state_encoder.decode_action(action)
+        # Update the game state according to the action
+        # This should match the game logic in big2Game
+        return new_state
+    
     def get_reward(self, state, player_id):
-        raise NotImplementedError
-        
+        # Calculate reward for the current state
+        if self.is_terminal(state):
+            return state['rewards'][player_id - 1]
+        return 0
+    
     def predict_q_value(self, state, action):
-        raise NotImplementedError
+        state_tensor = torch.FloatTensor(state['neural_input']).to(self.device)
+        q_values = self.q_network(state_tensor)
+        return q_values[action].item()
+
+    def create_state_dict(self, game_state, neural_input, available_actions):
+        return {
+            'neural_input': neural_input,
+            'available_actions': available_actions,
+            'current_player': game_state[0],
+            'game_state': game_state
+        }
