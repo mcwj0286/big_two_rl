@@ -10,9 +10,9 @@ from models.decision_transformer import DecisionTransformer
 import random
 from game.big2Game import big2Game  # Assuming big2Game is the correct class
 import game.enumerateOptions as enumerateOptions
-from PPONetwork import PPONetwork  # Import the PPONetwork class
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+from models.PPONetwork_pytorch import PPONetwork  # Import the PPONetwork class
+# import tensorflow.compat.v1 as tf
+# tf.disable_v2_behavior()
 import h5py  # Import h5py for HDF5 handling
 
 class PPO_gameplay_collect:
@@ -30,7 +30,8 @@ class PPO_gameplay_collect:
         learning_rate=1e-4,
         max_ep_len=200,
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        hdf5_path='trajectories.hdf5'  # Path to HDF5 file
+        hdf5_path='trajectories.hdf5', # Path to HDF5 file
+        ppo_model_path='output/modelParameters_best.py'  # Path to PPO model
     ):
         self.best_loss = float('inf')
         self.best_model_path = 'best_dt_model.pt'
@@ -53,10 +54,15 @@ class PPO_gameplay_collect:
         ).to(device)
 
         # Initialize PPO Agent
-        self.sess = tf.Session()
-        self.ppo_agent = PPONetwork(self.sess, state_dim, act_dim, 'ppo_agent')
-        self.ppo_agent.load_model(self.ppo_agent, 'modelParameters136500')
-        self.sess.run(tf.global_variables_initializer())
+        self.ppo_agent = PPONetwork(state_dim, act_dim).to(device)
+        # Load PPO Agent weights
+        if os.path.exists(ppo_model_path):
+            self.ppo_agent.load_state_dict(torch.load(ppo_model_path, map_location=self.device))
+            self.ppo_agent.to(self.device)
+            self.ppo_agent.eval()
+            print(f"Loaded PPO Agent weights from {ppo_model_path}")
+        else:
+            raise FileNotFoundError(f"PPO Agent model file not found: {ppo_model_path}")
 
         # Initialize HDF5 file
         self.hdf5_file = h5py.File(hdf5_path, 'a')  # Append mode
@@ -93,10 +99,10 @@ class PPO_gameplay_collect:
                 # Get current player, state, and available actions
                 current_player, curr_state, curr_avail_actions = game.getCurrentState()
                 state = curr_state[0]  # Remove batch dimension
-                available_actions = curr_avail_actions[0]  # Remove batch dimension
+                # available_actions = curr_avail_actions[0]  # Remove batch dimension
 
                 # Use PPO agent to select action
-                action, _, _ = self.ppo_agent.step([state], [available_actions])
+                action, b, c = self.ppo_agent.act(curr_state, curr_avail_actions)
                 action = action[0]
 
                 # Record current state, action, and timestep
@@ -121,8 +127,12 @@ class PPO_gameplay_collect:
             for player_id in self.player_ids:
                 traj = current_trajectories[player_id]
                 if len(traj['states']) > 0:
+                    print(f"Game {game_num}, Player {player_id}: {len(traj['states'])} steps")
+                    if len(traj['states'])>20:
+                        print(f"exeed 20 : States : {len(traj['states'])}")  
+                    # print(f"States shape: {traj['states'].shape}")
                     # Save the full trajectory as a single sequence
-                    self.save_sequence(traj, game_num, player_id)
+                    # self.save_sequence(traj, game_num, player_id)
 
         print("Finished collecting trajectories.")
         # Close the HDF5 file after collection

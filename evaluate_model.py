@@ -4,10 +4,11 @@
 import os
 import numpy as np
 import torch
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+# import tensorflow.compat.v1 as tf
+# tf.disable_v2_behavior()
 import h5py
-from PPONetwork import PPONetwork
+# from PPONetwork import PPONetwork
+from models.PPONetwork_pytorch import PPONetwork
 from models.decision_transformer_original import DecisionTransformer
 from game.big2Game import big2Game  # Ensure this is the correct import path
 
@@ -45,13 +46,22 @@ class ModelEvaluator:
             raise FileNotFoundError(f"Decision Transformer model file not found: {best_model_path}")
 
         # Initialize PPO Agent
-        self.sess = tf.Session()
-        self.ppo_agent = PPONetwork(self.sess, self.state_dim, self.act_dim, 'ppo_agent')
+        # self.sess = tf.Session()
+        # self.ppo_agent = PPONetwork(self.sess, self.state_dim, self.act_dim, 'ppo_agent')
+        self.ppo_agent = PPONetwork(self.state_dim, self.act_dim).to(self.device)
 
-        # Load PPO Agent weights
+        # # Load PPO Agent weights
+        # if os.path.exists(ppo_model_path):
+        #     self.ppo_agent.load_model(self.ppo_agent, ppo_model_path)
+        #     self.sess.run(tf.global_variables_initializer())
+        #     print(f"Loaded PPO Agent weights from {ppo_model_path}")
+        # else:
+        #     raise FileNotFoundError(f"PPO Agent model file not found: {ppo_model_path}")
+
         if os.path.exists(ppo_model_path):
-            self.ppo_agent.load_model(self.ppo_agent, ppo_model_path)
-            self.sess.run(tf.global_variables_initializer())
+            self.ppo_agent.load_state_dict(torch.load(ppo_model_path, map_location=self.device))
+            self.ppo_agent.to(self.device)
+            self.ppo_agent.eval()
             print(f"Loaded PPO Agent weights from {ppo_model_path}")
         else:
             raise FileNotFoundError(f"PPO Agent model file not found: {ppo_model_path}")
@@ -123,7 +133,9 @@ class ModelEvaluator:
                         # action = torch.argmax(action_probs, dim=-1).item()
                         print(f'decision transformer action: {action.item()}, max_prob: {max_prob.item()}')
                 else:  # PPO Agent players
-                    action, _, _ = self.ppo_agent.step([state], [available_actions])
+                    # curr_state = torch.tensor(curr_state, dtype=torch.float32, device=self.device)
+                    # curr_avail_actions = torch.tensor(curr_avail_actions, dtype=torch.float32, device=self.device)
+                    action, _, _ = self.ppo_agent.act(curr_state, curr_avail_actions)
                     action = action[0]
                     print(f'ppo agent action: {action}')    
 
@@ -167,18 +179,18 @@ class ModelEvaluator:
         print(f"Average Reward - Decision Transformer: {avg_reward_dt:.2f}")
         print(f"Average Reward - PPO Agent: {avg_reward_ppo:.2f}")
 
-    def __del__(self):
-        # Close TensorFlow session
-        if hasattr(self, 'sess') and self.sess:
-            self.sess.close()
-        print("Closed TensorFlow session.")
+    # def __del__(self):
+    #     # Close TensorFlow session
+    #     if hasattr(self, 'sess') and self.sess:
+    #         self.sess.close()
+    #     print("Closed TensorFlow session.")
 
 if __name__ == "__main__":
     evaluator = ModelEvaluator(
         state_dim=412,
         act_dim=1695,
         best_model_path='output/decision_transformer.pt',
-        ppo_model_path='modelParameters136500',
+        ppo_model_path='output/modelParameters_best.pt',
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
     evaluator.evaluate_game(num_games=100)

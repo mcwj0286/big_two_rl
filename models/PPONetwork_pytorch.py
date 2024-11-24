@@ -5,8 +5,9 @@ import numpy as np
 import joblib
 
 class PPONetwork(nn.Module):
-    def __init__(self, obs_dim, act_dim):
+    def __init__(self, obs_dim, act_dim,device='cuda' if torch.cuda.is_available() else 'cpu'):
         super(PPONetwork, self).__init__()
+        self.device = device
         self.obs_dim = obs_dim
         self.act_dim = act_dim
 
@@ -29,14 +30,14 @@ class PPONetwork(nn.Module):
         return pi_logits, value
 
     def act(self, obs, avail_actions):
-        obs = torch.tensor(obs, dtype=torch.float32)
-        avail_actions = torch.tensor(avail_actions, dtype=torch.float32)
+        obs = torch.tensor(obs, dtype=torch.float32,device=self.device)
+        avail_actions = torch.tensor(avail_actions, dtype=torch.float32,device=self.device)
         pi_logits, value = self.forward(obs)
         pi_logits = pi_logits + avail_actions  # Mask unavailable actions
         dist = torch.distributions.Categorical(logits=pi_logits)
         action = dist.sample()
         neglogp = -dist.log_prob(action)
-        return action.numpy(), value.detach().numpy(), neglogp.detach().numpy()
+        return action.detach().cpu().numpy(), value.detach().cpu().numpy(), neglogp.detach().cpu().numpy()
 
     def evaluate_actions(self, obs, avail_actions, actions):
         pi_logits, value = self.forward(obs)
