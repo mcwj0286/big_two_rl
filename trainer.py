@@ -4,7 +4,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from ppo_gameplay_dataset import PPOGameplayDataset, collate_fn
-from models.decision_transformer_original import DecisionTransformer
+# from models.decision_transformer_original import DecisionTransformer
+from models.decision_transformer import DecisionTransformer
+
 import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast  # Added for mixed precision
 # Import ModelEvaluator
@@ -15,7 +17,7 @@ def train_decision_transformer(
     state_dim,
     act_dim,
     n_blocks=6,
-    h_dim=1024,
+    h_dim=128,
     n_heads=8,
     drop_p=0.1,
     max_timestep=1000,
@@ -24,8 +26,8 @@ def train_decision_transformer(
     max_epochs=10,
     device='cuda' if torch.cuda.is_available() else 'cpu',
     # device = 'cpu',
-    save_model_path='output/decision_transformer.pt',
-    patience=15,  # Added for early stopping
+    save_model_path='output/official_decision_transformer.pt',
+    patience=30,  # Added for early stopping
     gradient_clip=1.0  # Added for gradient clipping
 ):
     # Initialize Dataset and DataLoader
@@ -42,13 +44,14 @@ def train_decision_transformer(
     model = DecisionTransformer(
         state_dim=state_dim,
         act_dim=act_dim,
-        n_blocks=n_blocks,
-        h_dim=h_dim,
-        context_len=30,  
-        n_heads=n_heads,
-        drop_p=drop_p,
-        max_timestep=max_timestep
+        hidden_size=h_dim,
+        max_ep_len=90,  
+        max_length=max_timestep,
+        action_tanh = False
     ).to(device)
+    # Print the number of parameters in the model
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total number of parameters in the decision transformer: {total_params}")
     # Initialize ModelEvaluator
     evaluator = ModelEvaluator(
         model=model,
@@ -77,46 +80,48 @@ def train_decision_transformer(
         for batch_idx, batch in enumerate(dataloader):
             # Move data to device
             states = batch['states'].to(device)           # Shape: (B, T, state_dim)
-            actions = batch['actions'].to(device)         # Shape: (B, T , act_dim)
+            actions = batch['actions'].to(device)         # Shape: (B, T )
             rewards = batch['rewards'].to(device)         # Shape: (B, T)
             timesteps = batch['timesteps'].to(device)     # Shape: (B, T)
             attention_mask = batch['attention_mask'].to(device)  # Shape: (B, T)
 
+            # Ensure attention mask is boolean
+            attention_mask = attention_mask.bool()
+            # convert to one-hot
+            # actions_one_hot = torch.zeros(actions.shape[0], actions.shape[1], act_dim, device=device)
+            # actions_one_hot.scatter_(2, actions.unsqueeze(-1), 1)  # Shape: (B, T, act_dim)
+        
             # Compute returns-to-go
             returns_to_go = torch.flip(torch.cumsum(torch.flip(rewards, dims=[1]), dim=1), dims=[1])
             returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
-            
+            print(f'attention mask shape: {attention_mask.shape}')
             # sparse rewards
             # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
 
             # Forward pass with mixed precision
             optimizer.zero_grad()
-            with autocast():  # Added for mixed precision
-                action_preds = model(
+            with autocast():
+                _,action_preds,_ = model(
                     timesteps=timesteps,
-                    states=states,
+                    states=states, 
                     actions=actions,
                     returns_to_go=returns_to_go,
+                    attention_mask=attention_mask
                 )
 
-                # Reshape for loss computation
+                # Safe reshaping
                 B, T, act_dim = action_preds.shape
-                action_preds = action_preds.view(B * T, act_dim)      # Shape: (B*T, act_dim)
-                actions_target = actions.view(B * T)                  # Shape: (B*T)
+                action_preds_flat = action_preds.reshape(-1, act_dim)
+                actions_target = actions.reshape(-1)
+                attention_mask_flat = attention_mask.reshape(-1)
 
-                # Apply attention mask
-                attention_mask = attention_mask.view(B * T).bool() 
-                
-                action_preds_valid = action_preds[attention_mask]
-                actions_target_valid = actions_target[attention_mask]
+                # Safe indexing
+                valid_mask = attention_mask_flat & (actions_target < act_dim)
+                action_preds_valid = action_preds_flat[valid_mask]
+                actions_target_valid = actions_target[valid_mask]
 
-                # Filter out padded action targets (equal to act_dim)
-                valid_indices = actions_target_valid != act_dim
-                action_preds_valid = action_preds_valid[valid_indices]
-                actions_target_valid = actions_target_valid[valid_indices]
-
-                if action_preds_valid.size(0) == 0:
-                    continue  # Skip this batch if no valid data
+                if len(action_preds_valid) == 0:
+                    continue
 
                 # Compute loss
                 loss = criterion(action_preds_valid, actions_target_valid)
@@ -178,6 +183,6 @@ if __name__ == "__main__":
         state_dim=state_dim,
         act_dim=act_dim,
         max_epochs=200,
-        batch_size=64,
+        batch_size=16,
         learning_rate=5e-6
     )

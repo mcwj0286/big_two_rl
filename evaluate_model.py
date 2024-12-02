@@ -8,7 +8,9 @@ import torch
 import h5py
 # from PPONetwork import PPONetwork
 from models.PPONetwork_pytorch import PPONetwork
-from models.decision_transformer_original import DecisionTransformer
+# from models.decision_transformer_original import DecisionTransformer
+from models.decision_transformer import DecisionTransformer
+
 from game.big2Game import big2Game  # Ensure this is the correct import path
 
 class ModelEvaluator:
@@ -31,15 +33,15 @@ class ModelEvaluator:
         else:
             # Initialize Decision Transformer
             self.dt = DecisionTransformer(
-                state_dim=self.state_dim,
-                act_dim=self.act_dim,
-                n_blocks=6,
-                h_dim=1024,
-                context_len=30,
-                n_heads=8,
-                drop_p=0.1,
-                max_timestep=1000
+                state_dim=state_dim,
+                act_dim=act_dim,
+                h_dim=768,
+                max_ep_len=30,  
+                max_length=1000
             ).to(self.device)
+            
+
+        
             # Load Decision Transformer weights
             if os.path.exists(best_model_path):
                 self.dt.load_state_dict(torch.load(best_model_path, map_location=self.device))
@@ -77,8 +79,8 @@ class ModelEvaluator:
             game = big2Game()
             game.reset()
             game_done = False
-            timestep = 0
-            target_reward = 1 # random set number of target reward ,TODO : adjust it to the real target reward 
+            game_timestep = 0
+            target_reward = 5 # random set number of target reward ,TODO : adjust it to the real target reward 
             while not game_done:
                 current_player, curr_state, curr_avail_actions = game.getCurrentState() # (n_game) , (n_game,1,412) , (n_game,1,1695)
                 # print(f"Game {game_num} | Timestep {timestep} | Player {current_player}")
@@ -88,7 +90,7 @@ class ModelEvaluator:
                     with torch.no_grad():
                         # print('decision transformer turn')
                         state= torch.tensor([state], dtype=torch.float32, device=self.device) # (1,412)
-                        timestep = torch.tensor([timestep], dtype=torch.long, device=self.device)
+                        timestep = torch.tensor([game_timestep], dtype=torch.long, device=self.device)
                         return_to_go = torch.tensor([target_reward], dtype=torch.float32, device=self.device)
                         if len(self.state_buffer[current_player - 1]) <1:
                             seq_length = 1
@@ -118,7 +120,7 @@ class ModelEvaluator:
                             # attention_mask = batch_attention_mask
                         
                         # print(f"Input shapes - Timesteps: {timesteps.shape}, States: {states.shape}, Actions: {actions.shape}, Returns to go: {returns_to_go.shape}")
-                        action_logits = self.dt.forward(
+                        _,action_logits,_ = self.dt.get_action(
                             timesteps=timesteps,
                             states=states,
                             actions=actions,
@@ -132,8 +134,13 @@ class ModelEvaluator:
                         masked_logits = action_logits + available_actions_tensor
 
                         # Select the action with the highest logit among available actions
+                        # action = torch.argmax(masked_logits).item()
+                        # max_prob , action = torch.max(masked_logits, dim=0)
+                        # if action.item() == 1694:
+                        #     masked_logits[1694] = 0.005
+                        #     print('hi')
                         action = torch.argmax(masked_logits).item()
-                    
+                        # print(f"Decision Transformer action: {action}")
 
                         # Append to buffers
                         self.state_buffer[current_player - 1].append(state.squeeze(0))
@@ -174,7 +181,9 @@ class ModelEvaluator:
                     self.timestep_buffer = [[] for _ in range(4)]
                     self.reward_buffer = [[] for _ in range(4)]
 
-                timestep += 1
+                    
+
+                game_timestep += 1
 
             if game_num % 100 == 0:
                 print(f"Completed {game_num}/{num_games} games.")
@@ -206,7 +215,8 @@ if __name__ == "__main__":
         state_dim=412,
         act_dim=1695,
         best_model_path='output/decision_transformer.pt',
+        # best_model_path='output/dt_20winrate.pt',
         ppo_model_path='output/modelParameters_best.pt',
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
-    evaluator.evaluate_game(num_games=5)
+    evaluator.evaluate_game(num_games=100)

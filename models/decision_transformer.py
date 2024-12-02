@@ -1,10 +1,11 @@
 import numpy as np
 import torch
 import torch.nn as nn
-
+import sys
 import transformers
+sys.path.append('/home/johnmok/Documents/GitHub/big_two_rl')
+from models.trajectory_gpt2 import GPT2Model
 
-from trajectory_gpt2 import GPT2Model
 
 class TrajectoryModel(nn.Module):
 
@@ -47,7 +48,7 @@ class DecisionTransformer(TrajectoryModel):
             vocab_size=1,  # doesn't matter -- we don't use the vocab
             n_embd=hidden_size,
             n_ctx=max_ep_len,
-            n_layer=16,     # number of transformer blocks
+            n_layer=2,     # number of transformer blocks
             n_head=8, 
             **kwargs
         )
@@ -59,7 +60,8 @@ class DecisionTransformer(TrajectoryModel):
         self.embed_timestep = nn.Embedding(max_ep_len, hidden_size)
         self.embed_return = torch.nn.Linear(1, hidden_size)
         self.embed_state = torch.nn.Linear(self.state_dim, hidden_size)
-        self.embed_action = torch.nn.Linear(self.act_dim, hidden_size)
+        # self.embed_action = torch.nn.Linear(self.act_dim, hidden_size)
+        self.embed_action = torch.nn.Embedding(self.act_dim, hidden_size)
 
         self.embed_ln = nn.LayerNorm(hidden_size)
 
@@ -98,7 +100,10 @@ class DecisionTransformer(TrajectoryModel):
         action_embeddings = self.embed_action(actions)
         returns_embeddings = self.embed_return(returns_to_go)
         time_embeddings = self.embed_timestep(timesteps)
-
+        print("State Embeddings Shape:", state_embeddings.shape)
+        print("Action Embeddings Shape:", action_embeddings.shape)
+        print("Returns Embeddings Shape:", returns_embeddings.shape)
+        print("Time Embeddings Shape:", time_embeddings.shape)
         # time embeddings are treated similar to positional embeddings
         state_embeddings = state_embeddings + time_embeddings
         action_embeddings = action_embeddings + time_embeddings
@@ -115,7 +120,8 @@ class DecisionTransformer(TrajectoryModel):
         stacked_attention_mask = torch.stack(
             (attention_mask, attention_mask, attention_mask), dim=1
         ).permute(0, 2, 1).reshape(batch_size, 3*seq_length)
-
+        print("Stacked Inputs Shape:", stacked_inputs.shape)
+        print("Stacked Attention Mask Shape:", stacked_attention_mask.shape)
         # we feed in the input embeddings (not word indices as in NLP) to the model
         transformer_outputs = self.transformer(
             inputs_embeds=stacked_inputs,
@@ -185,7 +191,7 @@ class DecisionTransformer(TrajectoryModel):
         else:
             attention_mask = None
 
-        _, action_preds, return_preds = self.forward(
+        _, action_preds, _ = self.forward(
             states, actions, returns_to_go, timesteps, attention_mask=attention_mask, **kwargs)
 
         return action_preds[0,-1]
@@ -196,14 +202,14 @@ class DecisionTransformer(TrajectoryModel):
 #     hidden_size = 128
 #     max_length = 20
 
-#     model = DecisionTransformer(state_dim, act_dim, hidden_size, max_length=max_length)
+#     model = DecisionTransformer(state_dim, act_dim, 768, max_length=max_length)
 
 #     # Create example tensors
 #     batch_size = 2
 #     seq_length = 15
-
+#     attention_mask = torch.zeros(batch_size, seq_length)
 #     states = torch.randn(batch_size, seq_length, state_dim)
-#     actions = torch.randn(batch_size, seq_length, act_dim)
+#     actions = torch.randint(0, act_dim, (batch_size, seq_length))
 #     rewards = torch.randn(batch_size, seq_length)
 #     returns_to_go = torch.randn(batch_size, seq_length, 1)
 #     timesteps = torch.randint(0, max_length, (batch_size, seq_length))
@@ -213,8 +219,9 @@ class DecisionTransformer(TrajectoryModel):
 #     print("Input Rewards Shape:", rewards.shape)
 #     print("Input Returns to Go Shape:", returns_to_go.shape)
 #     print("Input Timesteps Shape:", timesteps.shape)
+#     print("Attention Mask Shape:", attention_mask)
 #     # Test the forward pass
-#     state_preds, action_preds, return_preds = model(states, actions, returns_to_go, timesteps)
+#     state_preds, action_preds, return_preds = model(states, actions, returns_to_go, timesteps,attention_mask)
 
 #     print("State Predictions:", state_preds.shape)
 #     print("Action Predictions:", action_preds.shape)
@@ -234,5 +241,5 @@ class DecisionTransformer(TrajectoryModel):
 #     )
 
 #     print("Predicted Action:", action)
-#     total_params = sum(p.numel() for p in model.parameters())
-#     print(f"Total number of parameters: {total_params}")
+    # total_params = sum(p.numel() for p in model.parameters())
+    # print(f"Total number of parameters: {total_params}")
