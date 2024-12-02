@@ -38,6 +38,7 @@ class DecisionTransformer(TrajectoryModel):
             hidden_size,
             max_length=None,
             max_ep_len=4096,
+            seq_len=30,
             action_tanh=True,
             **kwargs
     ):
@@ -45,11 +46,14 @@ class DecisionTransformer(TrajectoryModel):
 
         self.hidden_size = hidden_size
         config = transformers.GPT2Config(
-            vocab_size=1,  # doesn't matter -- we don't use the vocab
+            vocab_size=1,
             n_embd=hidden_size,
             n_ctx=max_ep_len,
-            n_layer=2,     # number of transformer blocks
-            n_head=8, 
+            n_layer=2,
+            n_head=8,
+            n_inner=4 * hidden_size,  # Add this line
+            resid_pdrop=0.1,         # Add dropout
+            layer_norm_epsilon=1e-5,  # Add layer norm epsilon
             **kwargs
         )
 
@@ -57,11 +61,11 @@ class DecisionTransformer(TrajectoryModel):
         # is that the positional embeddings are removed (since we'll add those ourselves)
         self.transformer = GPT2Model(config)
 
-        self.embed_timestep = nn.Embedding(max_ep_len, hidden_size)
+        self.embed_timestep = nn.Embedding(seq_len, hidden_size)
         self.embed_return = torch.nn.Linear(1, hidden_size)
         self.embed_state = torch.nn.Linear(self.state_dim, hidden_size)
-        # self.embed_action = torch.nn.Linear(self.act_dim, hidden_size)
-        self.embed_action = torch.nn.Embedding(self.act_dim, hidden_size)
+        self.embed_action = torch.nn.Linear(self.act_dim, hidden_size)
+        # self.embed_action = torch.nn.Embedding(self.act_dim, hidden_size)
 
         self.embed_ln = nn.LayerNorm(hidden_size)
 
@@ -100,10 +104,7 @@ class DecisionTransformer(TrajectoryModel):
         action_embeddings = self.embed_action(actions)
         returns_embeddings = self.embed_return(returns_to_go)
         time_embeddings = self.embed_timestep(timesteps)
-        print("State Embeddings Shape:", state_embeddings.shape)
-        print("Action Embeddings Shape:", action_embeddings.shape)
-        print("Returns Embeddings Shape:", returns_embeddings.shape)
-        print("Time Embeddings Shape:", time_embeddings.shape)
+
         # time embeddings are treated similar to positional embeddings
         state_embeddings = state_embeddings + time_embeddings
         action_embeddings = action_embeddings + time_embeddings
@@ -120,12 +121,12 @@ class DecisionTransformer(TrajectoryModel):
         stacked_attention_mask = torch.stack(
             (attention_mask, attention_mask, attention_mask), dim=1
         ).permute(0, 2, 1).reshape(batch_size, 3*seq_length)
-        print("Stacked Inputs Shape:", stacked_inputs.shape)
-        print("Stacked Attention Mask Shape:", stacked_attention_mask.shape)
+
         # we feed in the input embeddings (not word indices as in NLP) to the model
         transformer_outputs = self.transformer(
             inputs_embeds=stacked_inputs,
-            attention_mask=stacked_attention_mask,
+            attention_mask=stacked_attention_mask
+            # attention_mask=stacked_attention_mask.half() if stacked_attention_mask.dtype == torch.float32 else stacked_attention_mask,
         )
         x = transformer_outputs['last_hidden_state']
 

@@ -4,6 +4,7 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader
 import torch.nn.functional as F  # Import for one-hot encoding
 
 class PPOGameplayDataset(Dataset):
@@ -71,7 +72,7 @@ class PPOGameplayDataset(Dataset):
 
         # Normalize rewards to range [-1, 1]
         rewards = 2 * (rewards - self.min_reward) / (self.max_reward - self.min_reward) - 1
-        rewards[actions == 1694] -= 0.1  # Apply penalty for action 1694
+        # rewards[actions == 1694] -= 0.1  # Apply penalty for action 1694
 
         return {
             'states': states,
@@ -92,26 +93,23 @@ class PPOGameplayDataset(Dataset):
 def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
     """
     Custom collate function to pad/truncate sequences, generate attention masks,
-    and convert actions to one-hot encoding.
+    and convert actions to one-hot encoding without using a padding value in act_dim.
 
     Args:
         batch (list): List of dictionaries returned by PPOGameplayDataset.__getitem__().
-        fixed_seq_length (int): Desired fixed sequence length. Must be a multiple of 3.
+        fixed_seq_length (int): Desired fixed sequence length.
         act_dim (int): Dimension of the action space for one-hot encoding.
 
     Returns:
-        dict: Batched and padded tensors along with the attention mask.
+        dict: Batched and padded tensors along with the attention mask and one-hot encoded actions.
     """
-    if fixed_seq_length % 3 != 0:
-        raise ValueError("fixed_seq_length must be a multiple of 3 to align with interleaved tokens.")
-
     padded_states = []
     padded_actions = []
     padded_rewards = []
     padded_timesteps = []
+    attention_masks = []
     game_ids = []
     player_ids = []
-    attention_masks = []
 
     for sample in batch:
         seq_len = sample['states'].size(0)
@@ -124,7 +122,6 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
             timesteps = sample['timesteps'][:fixed_seq_length]
             attn_mask = torch.ones(fixed_seq_length, dtype=torch.long)
         else:
-            # Calculate padding size
             pad_size = fixed_seq_length - seq_len
 
             # Pad states with zeros
@@ -133,13 +130,10 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
                 torch.zeros(pad_size, sample['states'].size(1), dtype=torch.float32)
             ], dim=0)
 
-            # Use act_dim as padding index
-            padding_value = act_dim  # Valid index for padding
-
-            # Pad actions with the padding index
+            # Pad actions with -1 (since action indices are >= 0)
             actions = torch.cat([
                 sample['actions'],
-                torch.full((pad_size,), padding_value, dtype=torch.long)
+                torch.full((pad_size,), -1, dtype=torch.long)
             ], dim=0)
 
             # Pad rewards with zeros
@@ -174,32 +168,58 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
     batch_rewards = torch.stack(padded_rewards)         # Shape: (B, fixed_seq_length)
     batch_timesteps = torch.stack(padded_timesteps)     # Shape: (B, fixed_seq_length)
     batch_attention_mask = torch.stack(attention_masks) # Shape: (B, fixed_seq_length)
-    batch_game_ids = torch.stack(game_ids)             # Shape: (B,)
-    batch_player_ids = torch.stack(player_ids)         # Shape: (B,)
+    batch_game_ids = torch.stack(game_ids)              # Shape: (B,)
+    batch_player_ids = torch.stack(player_ids)          # Shape: (B,)
+
+    # Create one-hot encoded actions
+    # Initialize tensor with zeros
+    batch_actions_one_hot = torch.zeros(
+        batch_actions.size(0),  # batch size
+        batch_actions.size(1),  # sequence length
+        act_dim,                # action dimension
+        dtype=torch.float32
+    )
+
+    # Create a mask for valid actions (actions != -1)
+    valid_actions_mask = batch_actions != -1  # Shape: (B, T)
+
+    # Get indices of valid actions
+    indices = valid_actions_mask.nonzero(as_tuple=False)  # Shape: (num_valid_actions, 2)
+
+    # Get valid action indices
+    valid_action_indices = batch_actions[valid_actions_mask].long()  # Shape: (num_valid_actions,)
+
+    # Scatter ones into the one-hot tensor at valid positions
+    batch_actions_one_hot[indices[:, 0], indices[:, 1], valid_action_indices] = 1.0
 
     return {
-        'states': batch_states,                 # (B, fixed_seq_length, state_dim)
-        'actions': batch_actions,               # (B, fixed_seq_length)
-        'rewards': batch_rewards,               # (B, fixed_seq_length)
-        'timesteps': batch_timesteps,           # (B, fixed_seq_length)
-        'attention_mask': batch_attention_mask, # (B, fixed_seq_length)
-        'game_id': batch_game_ids,              # (B,)
-        'player_id': batch_player_ids           # (B,)
+        'states': batch_states,                       # Shape: (B, fixed_seq_length, state_dim)
+        'actions': batch_actions,                     # Shape: (B, fixed_seq_length)
+        'actions_one_hot': batch_actions_one_hot,     # Shape: (B, fixed_seq_length, act_dim)
+        'rewards': batch_rewards,                     # Shape: (B, fixed_seq_length)
+        'timesteps': batch_timesteps,                 # Shape: (B, fixed_seq_length)
+        'attention_mask': batch_attention_mask,       # Shape: (B, fixed_seq_length)
+        'game_id': batch_game_ids,                    # Shape: (B,)
+        'player_id': batch_player_ids                 # Shape: (B,)
     }
 
 # if __name__ == "__main__":
-    # Example usage
-    # dataset = PPOGameplayDataset(hdf5_path='output/pytorch_ppo_trajectories.hdf5')
-    # print(f"Total sequences: {len(dataset)}")
+#     # Example usage of PPOGameplayDataset and collate_fn
+#     hdf5_path = 'output/pytorch_ppo_trajectories.hdf5'  # Update with the actual path to your HDF5 file
+#     dataset = PPOGameplayDataset(hdf5_path)
 
-    # # Retrieve a sample
-    # sample = dataset[9]
-    # print(sample['states'].shape)
-    # print(sample['actions'])
-    # print(sample['rewards'])
-    # print(sample['timesteps'].shape)
-    # print(sample['game_id'])
-    # print(sample['player_id'])
+#     # Create a DataLoader with the custom collate function
 
-#     # Close the dataset when done
-# #     dataset.close()
+#     dataloader = DataLoader(
+#         dataset,
+#         batch_size=2,  # Example batch size
+#         collate_fn=lambda batch: collate_fn(batch, fixed_seq_length=30, act_dim=1695)
+#     )
+
+#     # Iterate through the DataLoader and print the output of collate_fn
+#     for batch in dataloader:
+#         print(batch)
+#         break  # Only process the first batch for demonstration
+
+#     # Close the dataset
+#     dataset.close()

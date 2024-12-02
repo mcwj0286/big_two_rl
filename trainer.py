@@ -8,7 +8,8 @@ from ppo_gameplay_dataset import PPOGameplayDataset, collate_fn
 from models.decision_transformer import DecisionTransformer
 
 import torch.optim as optim
-from torch.cuda.amp import GradScaler, autocast  # Added for mixed precision
+# Remove the import of GradScaler and autocast
+# from torch.cuda.amp import GradScaler, autocast  # Removed
 # Import ModelEvaluator
 from evaluate_model import ModelEvaluator
 
@@ -45,7 +46,8 @@ def train_decision_transformer(
         state_dim=state_dim,
         act_dim=act_dim,
         hidden_size=h_dim,
-        max_ep_len=90,  
+        max_ep_len=90,
+        seq_len=30,  
         max_length=max_timestep,
         action_tanh = False
     ).to(device)
@@ -67,8 +69,8 @@ def train_decision_transformer(
     # Define loss function
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
-    # Initialize GradScaler for mixed precision
-    scaler = GradScaler()  # Added for mixed precision
+    # Remove the initialization of GradScaler
+    # scaler = GradScaler()  # Removed
 
     # Training loop
     model.train()
@@ -78,61 +80,65 @@ def train_decision_transformer(
     for epoch in range(max_epochs):
         total_loss = 0
         for batch_idx, batch in enumerate(dataloader):
-            # Move data to device
-            states = batch['states'].to(device)           # Shape: (B, T, state_dim)
-            actions = batch['actions'].to(device)         # Shape: (B, T )
-            rewards = batch['rewards'].to(device)         # Shape: (B, T)
-            timesteps = batch['timesteps'].to(device)     # Shape: (B, T)
-            attention_mask = batch['attention_mask'].to(device)  # Shape: (B, T)
-
-            # Ensure attention mask is boolean
-            attention_mask = attention_mask.bool()
-            # convert to one-hot
-            # actions_one_hot = torch.zeros(actions.shape[0], actions.shape[1], act_dim, device=device)
-            # actions_one_hot.scatter_(2, actions.unsqueeze(-1), 1)  # Shape: (B, T, act_dim)
-        
+            # Move data to device with correct dtype
+            states = batch['states'].to(device).float()
+            actions = batch['actions'].to(device).float()  # Ensure actions are float
+            rewards = batch['rewards'].to(device).float()
+            timesteps = batch['timesteps'].to(device).long()
+            attention_mask = batch['attention_mask'].to(device).float()
+            action_one_hot = batch['actions_one_hot'].to(device).float()
             # Compute returns-to-go
             returns_to_go = torch.flip(torch.cumsum(torch.flip(rewards, dims=[1]), dim=1), dims=[1])
             returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
-            print(f'attention mask shape: {attention_mask.shape}')
+             # Add validation checks
+            print(f"States shape: {states.shape}, range: [{states.min():.2f}, {states.max():.2f}]")
+            print(f"Actions shape: {action_one_hot.shape}, range: [{action_one_hot.min():.2f}, {action_one_hot.max():.2f}]")
+            print(f"Returns shape: {returns_to_go.shape}, range: [{returns_to_go.min():.2f}, {returns_to_go.max():.2f}]")
+            print(f"Timesteps shape: {timesteps.shape}, range: [{timesteps.min()}, {timesteps.max()}]")
+
             # sparse rewards
             # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
 
-            # Forward pass with mixed precision
+            # Forward pass without autocast
             optimizer.zero_grad()
-            with autocast():
-                _,action_preds,_ = model(
-                    timesteps=timesteps,
-                    states=states, 
-                    actions=actions,
-                    returns_to_go=returns_to_go,
-                    attention_mask=attention_mask
-                )
+            _, action_preds, _ = model(
+                timesteps=timesteps,
+                states=states,
+                actions=action_one_hot,
+                returns_to_go=returns_to_go,
+                attention_mask=attention_mask.bool()
+            )
+            
+            B, T, act_dim = action_preds.shape
+            action_preds = action_preds.view(B * T, act_dim)      # Shape: (B*T, act_dim)
+            actions_target = actions.view(B * T)                  # Shape: (B*T)
 
-                # Safe reshaping
-                B, T, act_dim = action_preds.shape
-                action_preds_flat = action_preds.reshape(-1, act_dim)
-                actions_target = actions.reshape(-1)
-                attention_mask_flat = attention_mask.reshape(-1)
+            # Apply attention mask
+            attention_mask_flat = attention_mask.view(B * T).bool()
+            action_preds_valid = action_preds[attention_mask_flat]
+            actions_target_valid = actions_target[attention_mask_flat]
+            # Debug prints
+            print(f"Shapes after reshape:")
+            print(f"action_preds: {action_preds.shape}")
+            print(f"actions_target: {actions_target.shape}")
+            print(f"attention_mask_flat: {attention_mask_flat.shape}")
 
-                # Safe indexing
-                valid_mask = attention_mask_flat & (actions_target < act_dim)
-                action_preds_valid = action_preds_flat[valid_mask]
-                actions_target_valid = actions_target[valid_mask]
 
-                if len(action_preds_valid) == 0:
-                    continue
+            # Filter out padded action targets (equal to act_dim)
+            valid_indices = actions_target_valid != act_dim
+            action_preds_valid = action_preds_valid[valid_indices]
+            actions_target_valid = actions_target_valid[valid_indices]
+            if action_preds_valid.size(0) == 0:
+                continue  # Skip this batch if no valid data
 
-                # Compute loss
-                loss = criterion(action_preds_valid, actions_target_valid)
+            # Compute loss
+            loss = criterion(action_preds_valid, actions_target_valid)
 
-            # Backpropagation with gradient scaling
-            scaler.scale(loss).backward()
+            # Backpropagation without gradient scaling
+            loss.backward()
             # Gradient clipping
-            scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
 
             total_loss += loss.item()
 
