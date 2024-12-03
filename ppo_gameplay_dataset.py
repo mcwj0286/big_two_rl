@@ -130,6 +130,11 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
         elif seq_len > fixed_seq_length:
             attention_mask = attention_mask[:fixed_seq_length]
             
+        # Generate local timesteps starting from 0
+        local_timesteps = torch.arange(min(seq_len, fixed_seq_length), dtype=torch.long)
+        if seq_len < fixed_seq_length:
+            local_timesteps = F.pad(local_timesteps, (0, fixed_seq_length - seq_len))
+            
         # Pad or truncate sequences
         states = F.pad(seq['states'][:fixed_seq_length], 
                       (0, 0, 0, max(0, fixed_seq_length - seq_len)))
@@ -139,15 +144,13 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
                                (0, 0, 0, max(0, fixed_seq_length - seq_len)))
         rewards = F.pad(seq['rewards'][:fixed_seq_length], 
                        (0, max(0, fixed_seq_length - seq_len)))
-        timesteps = F.pad(seq['timesteps'][:fixed_seq_length], 
-                         (0, max(0, fixed_seq_length - seq_len)))
         
         # Append to lists
         states_list.append(states)
         actions_list.append(actions)
         actions_one_hot_list.append(actions_one_hot)
         rewards_list.append(rewards)
-        timesteps_list.append(timesteps)
+        timesteps_list.append(local_timesteps)  # Use local_timesteps instead of seq['timesteps']
         attention_masks.append(attention_mask)
     
     # Stack all tensors
@@ -160,29 +163,29 @@ def collate_fn(batch, fixed_seq_length=30, act_dim=1695):
         'attention_mask': torch.stack(attention_masks)
     }
 
-if __name__ == "__main__":
-    # Example usage of PPOGameplayDataset and collate_fn
-    hdf5_path = 'output/pytorch_ppo_trajectories.hdf5'  # Update with the actual path to your HDF5 file
-    dataset = PPOGameplayDataset(hdf5_path)
+# if __name__ == "__main__":
+#     # Example usage of PPOGameplayDataset and collate_fn
+#     hdf5_path = 'output/pytorch_ppo_trajectories.hdf5'  # Update with the actual path to your HDF5 file
+#     dataset = PPOGameplayDataset(hdf5_path)
 
-    # Create a DataLoader with the custom collate function
+#     # Create a DataLoader with the custom collate function
 
-    dataloader = DataLoader(
-        dataset,
-        batch_size=2,  # Example batch size
-        collate_fn=lambda batch: collate_fn(batch, fixed_seq_length=30, act_dim=1695)
-    )
+#     dataloader = DataLoader(
+#         dataset,
+#         batch_size=2,  # Example batch size
+#         collate_fn=lambda batch: collate_fn(batch, fixed_seq_length=30, act_dim=1695)
+#     )
 
-    # Iterate through the DataLoader and print the output of collate_fn
-    for batch in dataloader:
-        print("States shape:", batch['states'].shape)
-        print("Actions shape:", batch['actions'].shape)
-        print("Actions one-hot shape:", batch['actions_one_hot'].shape)
-        print("Rewards shape:", batch['rewards'].shape)
-        print("Timesteps shape:", batch['timesteps'].shape)
-        print("Attention mask shape:", batch['attention_mask'].shape)
-        break  # Only process the first batch for demonstration
-        break  # Only process the first batch for demonstration
+#     # Iterate through the DataLoader and print the output of collate_fn
+#     for batch in dataloader:
+#         print("States shape:", batch['states'].shape)
+#         print("Actions shape:", batch['actions'].shape)
+#         print("Actions one-hot shape:", batch['actions_one_hot'].shape)
+#         print("Rewards shape:", batch['rewards'].shape)
+#         print("Timesteps shape:", batch['timesteps'].shape)
+#         print("Attention mask shape:", batch['attention_mask'].shape)
+#         break  # Only process the first batch for demonstration
+#         break  # Only process the first batch for demonstration
 
-    # Close the dataset
-    dataset.close()
+#     # Close the dataset
+#     dataset.close()
