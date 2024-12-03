@@ -20,7 +20,7 @@ class RandomAgent:
         # print("available_actions indices:", available_actions.shape)
         # Get valid action indices where value is 0
         valid_actions = np.where(action_indices >=0)[1]
-        # print("Available action choices:", valid_actions)
+        print("Available action choices:", valid_actions)
         
         # Randomly select one valid action
         if len(valid_actions) > 0:
