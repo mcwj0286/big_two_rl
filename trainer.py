@@ -18,7 +18,7 @@ def train_decision_transformer(
     state_dim,
     act_dim,
     n_blocks=6,
-    h_dim=128,
+    h_dim=512,
     n_heads=8,
     drop_p=0.1,
     max_timestep=1000,
@@ -29,8 +29,16 @@ def train_decision_transformer(
     # device = 'cpu',
     save_model_path='output/official_decision_transformer.pt',
     patience=30,  # Added for early stopping
-    gradient_clip=1.0  # Added for gradient clipping
+    # gradient_clip=1.0  # Added for gradient clipping
 ):
+    # Add CUDA error handling and debug info
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
+    
+    # Add environment variable for CUDA error debugging
+    import os
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+    
     # Initialize Dataset and DataLoader
     dataset = PPOGameplayDataset(hdf5_path)
     dataloader = DataLoader(
@@ -76,78 +84,88 @@ def train_decision_transformer(
     model.train()
     best_win_rate = 0
     best_avg_reward = float('-inf')
+    best_loss = float('inf')
     epochs_no_improve = 0  # Added for early stopping
     for epoch in range(max_epochs):
         total_loss = 0
         for batch_idx, batch in enumerate(dataloader):
-            # Move data to device with correct dtype
-            states = batch['states'].to(device).float()
-            actions = batch['actions'].to(device).float()  # Ensure actions are float
-            rewards = batch['rewards'].to(device).float()
-            timesteps = batch['timesteps'].to(device).long()
-            attention_mask = batch['attention_mask'].to(device).float()
-            action_one_hot = batch['actions_one_hot'].to(device).float()
-            # Compute returns-to-go
-            returns_to_go = torch.flip(torch.cumsum(torch.flip(rewards, dims=[1]), dim=1), dims=[1])
-            returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
-             # Add validation checks
-            print(f"States shape: {states.shape}, range: [{states.min():.2f}, {states.max():.2f}]")
-            print(f"Actions shape: {action_one_hot.shape}, range: [{action_one_hot.min():.2f}, {action_one_hot.max():.2f}]")
-            print(f"Returns shape: {returns_to_go.shape}, range: [{returns_to_go.min():.2f}, {returns_to_go.max():.2f}]")
-            print(f"Timesteps shape: {timesteps.shape}, range: [{timesteps.min()}, {timesteps.max()}]")
+            try:
+                # Move data to device with validation
+                states = batch['states'].to(device).float()
+                actions = batch['actions'].to(device).long()  # Change to long instead of float
+                rewards = batch['rewards'].to(device).float()
+                timesteps = batch['timesteps'].to(device).long()
+                attention_mask = batch['attention_mask'].to(device).float()
+                action_one_hot = batch['actions_one_hot'].to(device).float()
+                # Compute returns-to-go
+                returns_to_go = torch.flip(torch.cumsum(torch.flip(rewards, dims=[1]), dim=1), dims=[1])
+                returns_to_go = returns_to_go.unsqueeze(-1)  # Shape: (B, T, 1)
+  
+                
+                # sparse rewards
+                # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
 
-            # sparse rewards
-            # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
+                # Forward pass without autocast
+                optimizer.zero_grad()
+                _, action_preds, _ = model(
+                    timesteps=timesteps,
+                    states=states,
+                    actions=action_one_hot,
+                    returns_to_go=returns_to_go,
+                    attention_mask=attention_mask.bool()
+                )
+                
+                B, T, act_dim = action_preds.shape
+                action_preds = action_preds.view(B * T, act_dim)      # Shape: (B*T, act_dim)
+                actions_target = actions.view(B * T)                  # Shape: (B*T)
 
-            # Forward pass without autocast
-            optimizer.zero_grad()
-            _, action_preds, _ = model(
-                timesteps=timesteps,
-                states=states,
-                actions=action_one_hot,
-                returns_to_go=returns_to_go,
-                attention_mask=attention_mask.bool()
-            )
-            
-            B, T, act_dim = action_preds.shape
-            action_preds = action_preds.view(B * T, act_dim)      # Shape: (B*T, act_dim)
-            actions_target = actions.view(B * T)                  # Shape: (B*T)
+                # Apply attention mask
+                attention_mask_flat = attention_mask.view(B * T).bool()
+                action_preds_valid = action_preds[attention_mask_flat]
+                actions_target_valid = actions_target[attention_mask_flat]
 
-            # Apply attention mask
-            attention_mask_flat = attention_mask.view(B * T).bool()
-            action_preds_valid = action_preds[attention_mask_flat]
-            actions_target_valid = actions_target[attention_mask_flat]
-            # Debug prints
-            print(f"Shapes after reshape:")
-            print(f"action_preds: {action_preds.shape}")
-            print(f"actions_target: {actions_target.shape}")
-            print(f"attention_mask_flat: {attention_mask_flat.shape}")
+                # Filter out padded action targets (equal to act_dim)
+                valid_indices = actions_target_valid != act_dim
+                action_preds_valid = action_preds_valid[valid_indices].float()  # Ensure predictions are float
+                actions_target_valid = actions_target_valid[valid_indices].long()  # Ensure targets are long
+                if action_preds_valid.size(0) == 0:
+                    continue  # Skip this batch if no valid data
 
+                # Compute loss
+                loss = criterion(action_preds_valid, actions_target_valid)
 
-            # Filter out padded action targets (equal to act_dim)
-            valid_indices = actions_target_valid != act_dim
-            action_preds_valid = action_preds_valid[valid_indices]
-            actions_target_valid = actions_target_valid[valid_indices]
-            if action_preds_valid.size(0) == 0:
-                continue  # Skip this batch if no valid data
+                # Backpropagation without gradient scaling
+                loss.backward()
+                # Gradient clipping
+                # nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+                optimizer.step()
 
-            # Compute loss
-            loss = criterion(action_preds_valid, actions_target_valid)
+                total_loss += loss.item()
 
-            # Backpropagation without gradient scaling
-            loss.backward()
-            # Gradient clipping
-            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
-            optimizer.step()
-
-            total_loss += loss.item()
-
-            if batch_idx % 10 == 0:
-                print(f"Epoch [{epoch+1}/{max_epochs}], Batch [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
+                if batch_idx % 10 == 0:
+                    print(f"Epoch [{epoch+1}/{max_epochs}], Batch [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
+            except RuntimeError as e:
+                print(f"Error in batch {batch_idx}:")
+                print(f"Error message: {str(e)}")
+                print(f"Device: {device}")
+                print(f"CUDA memory allocated: {torch.cuda.memory_allocated(device)}")
+                raise e
 
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch [{epoch+1}/{max_epochs}] Average Loss: {avg_loss:.4f}")
 
+        # #  Save model if loss improves
+        # if avg_loss < best_loss:
+        #     best_loss = avg_loss
+        #     epochs_no_improve = 0  # Reset counter
+        #     torch.save(model.state_dict(), save_model_path)
+        #     print(f"New best model saved with loss: {avg_loss:.4f}")
+        # else:
+        #     epochs_no_improve += 1 
+            
+        #     if epochs_no_improve >= patience:
+        #         print("Early stopping triggered")
+        #         break
         # Perform validation after each epoch
         model.eval()
         win_rate, avg_reward = evaluator.evaluate_game(num_games=100)  # Adjust num_games as needed
@@ -188,7 +206,7 @@ if __name__ == "__main__":
         hdf5_path=hdf5_path,
         state_dim=state_dim,
         act_dim=act_dim,
-        max_epochs=200,
-        batch_size=16,
+        max_epochs=300,
+        batch_size=64,
         learning_rate=5e-6
     )

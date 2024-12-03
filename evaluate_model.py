@@ -18,14 +18,16 @@ class ModelEvaluator:
         self,
         state_dim=412,
         act_dim=1695,
-        best_model_path='./output/decision_transformer.pt',
+        best_model_path='output/official_decision_transformer_1.pt',
         ppo_model_path='modelParameters136500',
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        model = None
+        model = None,
+        mode = 'eval'  # Add mode parameter
     ):
         self.device = device
         self.state_dim = state_dim
         self.act_dim = act_dim
+        self.mode = mode  # or val
 
         if model is not None:
             self.dt = model
@@ -35,10 +37,12 @@ class ModelEvaluator:
             self.dt = DecisionTransformer(
                 state_dim=state_dim,
                 act_dim=act_dim,
-                h_dim=768,
-                max_ep_len=30,  
-                max_length=1000
-            ).to(self.device)
+                hidden_size=512,
+                max_ep_len=90,
+                seq_len=30,  
+                max_length=None,
+                action_tanh = False
+            ).to(device)
             
 
         
@@ -46,7 +50,8 @@ class ModelEvaluator:
             if os.path.exists(best_model_path):
                 self.dt.load_state_dict(torch.load(best_model_path, map_location=self.device))
                 self.dt.eval()
-                print(f"Loaded Decision Transformer weights from {best_model_path}")
+                if self.mode == 'eval':
+                    print(f"Loaded Decision Transformer weights from {best_model_path}")
             else:
                 raise FileNotFoundError(f"Decision Transformer model file not found: {best_model_path}")
 
@@ -63,9 +68,13 @@ class ModelEvaluator:
             self.ppo_agent.load_state_dict(torch.load(ppo_model_path, map_location=self.device))
             self.ppo_agent.to(self.device)
             self.ppo_agent.eval()
-            print(f"Loaded PPO Agent weights from {ppo_model_path}")
+            if self.mode == 'eval':
+                print(f"Loaded PPO Agent weights from {ppo_model_path}")
         else:
             raise FileNotFoundError(f"PPO Agent model file not found: {ppo_model_path}")
+
+        # Add local timestep counters for each player
+        self.local_timesteps = [0, 0, 0, 0]  # One counter for each player
 
     def evaluate_game(self, num_games=1000):
         """Evaluate the Decision Transformer against the PPO Agent."""
@@ -79,8 +88,8 @@ class ModelEvaluator:
             game = big2Game()
             game.reset()
             game_done = False
-            game_timestep = 0
-            target_reward = 5 # random set number of target reward ,TODO : adjust it to the real target reward 
+            self.local_timesteps = [0, 0, 0, 0]  # Reset local timesteps at start of each game
+            target_reward = 1 # random set number of target reward ,TODO : adjust it to the real target reward 
             while not game_done:
                 current_player, curr_state, curr_avail_actions = game.getCurrentState() # (n_game) , (n_game,1,412) , (n_game,1,1695)
                 # print(f"Game {game_num} | Timestep {timestep} | Player {current_player}")
@@ -88,66 +97,63 @@ class ModelEvaluator:
                 available_actions = curr_avail_actions[0]  # Remove batch dimension
                 if current_player in [1, 3]:  # Decision Transformer players
                     with torch.no_grad():
-                        # print('decision transformer turn')
-                        state= torch.tensor([state], dtype=torch.float32, device=self.device) # (1,412)
-                        timestep = torch.tensor([game_timestep], dtype=torch.long, device=self.device)
-                        return_to_go = torch.tensor([target_reward], dtype=torch.float32, device=self.device)
-                        if len(self.state_buffer[current_player - 1]) <1:
-                            seq_length = 1
-                            batch_states = state.unsqueeze(0)
-                            batch_actions = torch.zeros((1, seq_length), dtype=torch.long, device=self.device)  # Changed to LongTensor
-                            batch_rewards = return_to_go.unsqueeze(0).unsqueeze(0)
-                            batch_timesteps = timestep.unsqueeze(0)
-                            # batch_attention_mask = torch.ones((1, seq_length), dtype=torch.bool, device=self.device)
-
-             
-                        else:
-                            seq_length = len(self.state_buffer[current_player - 1])
-    
-                            # Stack states and actions without extra dimensions
-                            batch_states = torch.stack(self.state_buffer[current_player - 1], dim=0).unsqueeze(0)      # Shape: [1, N, 412]
-                            batch_actions = torch.stack(self.action_buffer[current_player - 1], dim=0).unsqueeze(0)    # Ensure LongTensor
-                            batch_rewards = torch.stack(self.reward_buffer[current_player - 1], dim=0).unsqueeze(0)    # Shape: [1, N]
-                            # Convert timesteps and rewards lists to tensors
-                            # batch_rewards = torch.tensor(self.reward_buffer[current_player - 1], dtype=torch.float32, device=self.device).unsqueeze(0)    # Shape: [1, N]
-                           
-                            batch_timesteps = torch.tensor(self.timestep_buffer[current_player - 1], dtype=torch.long, device=self.device).unsqueeze(0)    # Shape: [1, N]
-
-                        timesteps = batch_timesteps
-                        states = batch_states
-                        actions = batch_actions  # Actions tensor is now LongTensor
-                        returns_to_go = batch_rewards
-                            # attention_mask = batch_attention_mask
+                        # if self.mode == 'eval':
+                        #     print(f"Decision Transformer player {current_player}")
+                        # Convert state and prepare initial tensors
                         
-                        # print(f"Input shapes - Timesteps: {timesteps.shape}, States: {states.shape}, Actions: {actions.shape}, Returns to go: {returns_to_go.shape}")
-                        _,action_logits,_ = self.dt.get_action(
-                            timesteps=timesteps,
-                            states=states,
-                            actions=actions,
-                            returns_to_go=returns_to_go,
-                        )  # Shape: [1, N, act_dim]
+                        state = torch.tensor([state], dtype=torch.float32, device=self.device)# Shape: (1, 412)
+                        
+                        local_t = self.local_timesteps[current_player - 1]# Shape: (1,) 
+                        timestep = torch.tensor([local_t], dtype=torch.long, device=self.device)
+                        
+                        return_to_go = torch.tensor([target_reward], dtype=torch.float32, device=self.device)# Shape: (1,) 
 
-                        action_logits = action_logits[0, -1]  # Get the last timestep
-                        available_actions_tensor = torch.tensor(available_actions, dtype=torch.float32, device=self.device)
-
-                        # Add available actions mask
-                        masked_logits = action_logits + available_actions_tensor
-
-                        # Select the action with the highest logit among available actions
-                        # action = torch.argmax(masked_logits).item()
-                        # max_prob , action = torch.max(masked_logits, dim=0)
-                        # if action.item() == 1694:
-                        #     masked_logits[1694] = 0.005
-                        #     print('hi')
-                        action = torch.argmax(masked_logits).item()
-                        # print(f"Decision Transformer action: {action}")
-
-                        # Append to buffers
+                        # First add current state and use the previous action (or zero if first move)
                         self.state_buffer[current_player - 1].append(state.squeeze(0))
-                        self.action_buffer[current_player - 1].append(torch.tensor(action, dtype=torch.long, device=self.device))  # Ensure LongTensor
                         self.timestep_buffer[current_player - 1].append(timestep)
                         self.reward_buffer[current_player - 1].append(return_to_go)
 
+                        # Now prepare the input based on updated buffer
+                        seq_length = len(self.state_buffer[current_player - 1])
+                        # Shape: (1, seq_length, 412) - batch_size=1, sequence_length, state_dim
+                        batch_states = torch.stack(self.state_buffer[current_player - 1], dim=0).unsqueeze(0)
+                        # Shape: (1, seq_length) - batch_size=1, sequence_length
+                        batch_rewards = torch.stack(self.reward_buffer[current_player - 1], dim=0).unsqueeze(0)
+                        # Shape: (1, seq_length) - batch_size=1, sequence_length
+                        batch_timesteps = torch.tensor(self.timestep_buffer[current_player - 1], dtype=torch.long, device=self.device).unsqueeze(0)
+
+                        if seq_length == 1:
+                            # Prepare one-hot encoded action
+                            action_one_hot = torch.zeros(1, 1, self.act_dim, device=self.device)
+                            self.action_buffer[current_player - 1].append(action_one_hot)
+                        
+                        batch_action_one_hot = torch.stack(self.action_buffer[current_player - 1], dim=1)
+                        # print(f"States shape: {batch_states.shape}")  # (1, seq_length, 412)
+                        # print(f"Actions shape: {batch_action_one_hot.shape}")  # (1, seq_length, 1695)
+                        # print(f"Returns shape: {batch_rewards}")  # (1, seq_length)
+                        # print(f"Timesteps shape: {batch_timesteps}")  # (1, seq_length)
+                        # Get action from model
+                        action_logits = self.dt.get_action(
+                            timesteps=batch_timesteps,
+                            states=batch_states,
+                            actions=batch_action_one_hot,
+                            returns_to_go=batch_rewards,
+                        )
+
+                        # Apply action mask and get action
+                        available_actions_tensor = torch.tensor(available_actions, dtype=torch.float32, device=self.device)
+                        masked_logits = action_logits + available_actions_tensor
+                        action = torch.argmax(masked_logits).item()
+                        
+                        # Convert action to one-hot
+                        action_one_hot = torch.zeros(1,1,self.act_dim, device=self.device)
+                        action_one_hot[0][0][action] = 1
+                        self.action_buffer[current_player - 1].append(action_one_hot)
+
+                        # Increment the local timestep counter
+                        self.local_timesteps[current_player - 1] += 1
+                        # if self.mode == 'eval':
+                        #     print(f"Decision Transformer action: {action}")
                 else:  # PPO Agent players
                     # curr_state = torch.tensor(curr_state, dtype=torch.float32, device=self.device)
                     # curr_avail_actions = torch.tensor(curr_avail_actions, dtype=torch.float32, device=self.device)
@@ -180,12 +186,13 @@ class ModelEvaluator:
                     self.action_buffer = [[] for _ in range(4)]
                     self.timestep_buffer = [[] for _ in range(4)]
                     self.reward_buffer = [[] for _ in range(4)]
+                    self.local_timesteps = [0, 0, 0, 0]
 
                     
 
-                game_timestep += 1
+                # game_timestep += 1
 
-            if game_num % 100 == 0:
+            if game_num % 100 == 0 and self.mode == 'eval':
                 print(f"Completed {game_num}/{num_games} games.")
 
         # Calculate statistics
@@ -195,13 +202,14 @@ class ModelEvaluator:
         avg_reward_dt = total_rewards_dt / num_games
         avg_reward_ppo = total_rewards_ppo / num_games
 
-        # print("\nEvaluation Results:")
-        # print(f"Total Games: {num_games}")
-        # print(f"Decision Transformer Wins: {dt_wins} ({dt_win_rate:.2f}%)")
-        # print(f"PPO Agent Wins: {ppo_wins} ({ppo_win_rate:.2f}%)")
-        # print(f"Draws: {draws} ({draw_rate:.2f}%)")
-        # print(f"Average Reward - Decision Transformer: {avg_reward_dt:.2f}")
-        # print(f"Average Reward - PPO Agent: {avg_reward_ppo:.2f}")
+        if self.mode == 'eval':
+            print("\nEvaluation Results:")
+            print(f"Total Games: {num_games}")
+            print(f"Decision Transformer Wins: {dt_wins} ({dt_win_rate:.2f}%)")
+            print(f"PPO Agent Wins: {ppo_wins} ({ppo_win_rate:.2f}%)")
+            print(f"Draws: {draws} ({draw_rate:.2f}%)")
+            print(f"Average Reward - Decision Transformer: {avg_reward_dt:.2f}")
+            print(f"Average Reward - PPO Agent: {avg_reward_ppo:.2f}")
         return dt_win_rate, avg_reward_dt
 
     # def __del__(self):
@@ -214,9 +222,10 @@ if __name__ == "__main__":
     evaluator = ModelEvaluator(
         state_dim=412,
         act_dim=1695,
-        best_model_path='output/decision_transformer.pt',
+        # best_model_path='output/decision_transformer.pt',
         # best_model_path='output/dt_20winrate.pt',
         ppo_model_path='output/modelParameters_best.pt',
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        mode='eval'  # Add mode parameter
     )
-    evaluator.evaluate_game(num_games=100)
+    evaluator.evaluate_game(num_games=10)

@@ -187,17 +187,32 @@ class Attention(nn.Module):
         return outputs
 
     def merge_heads(self, x):
+        # Add shape validation
+        if len(x.shape) != 4:
+            raise ValueError(f"Expected 4D tensor, got shape {x.shape}")
+       
         x = x.permute(0, 2, 1, 3).contiguous()
         new_x_shape = x.size()[:-2] + (x.size(-2) * x.size(-1),)
-        return x.view(*new_x_shape)  # in Tensorflow implem: fct merge_states
+
+        
+        return x.view(*new_x_shape)
 
     def split_heads(self, x, k=False):
+        # Add shape validation
+        if len(x.shape) != 3:
+            raise ValueError(f"Expected 3D tensor, got shape {x.shape}")
+            
+ 
+        
         new_x_shape = x.size()[:-1] + (self.n_head, x.size(-1) // self.n_head)
-        x = x.view(*new_x_shape)  # in Tensorflow implem: fct split_states
+        x = x.view(*new_x_shape)
+        
         if k:
-            return x.permute(0, 2, 3, 1)  # (batch, head, head_features, seq_length)
+            x = x.permute(0, 2, 3, 1)
         else:
-            return x.permute(0, 2, 1, 3)  # (batch, head, seq_length, head_features)
+            x = x.permute(0, 2, 1, 3)
+
+        return x
 
     def forward(
             self,
@@ -210,6 +225,11 @@ class Attention(nn.Module):
             use_cache=False,
             output_attentions=False,
     ):
+        # Add input validation
+        if hidden_states.dim() != 3:
+            raise ValueError(f"Expected 3D tensor for hidden_states, got shape {hidden_states.shape}")
+            
+
         if encoder_hidden_states is not None:
             assert hasattr(
                 self, "q_attn"

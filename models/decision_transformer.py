@@ -33,11 +33,11 @@ class DecisionTransformer(TrajectoryModel):
 
     def __init__(
             self,
-            state_dim,
-            act_dim,
-            hidden_size,
+            state_dim=412,
+            act_dim=1695,
+            hidden_size=512,
             max_length=None,
-            max_ep_len=4096,
+            max_ep_len=90,
             seq_len=30,
             action_tanh=True,
             **kwargs
@@ -49,7 +49,7 @@ class DecisionTransformer(TrajectoryModel):
             vocab_size=1,
             n_embd=hidden_size,
             n_ctx=max_ep_len,
-            n_layer=2,
+            n_layer=6,
             n_head=8,
             n_inner=4 * hidden_size,  # Add this line
             resid_pdrop=0.1,         # Add dropout
@@ -97,7 +97,7 @@ class DecisionTransformer(TrajectoryModel):
 
         if attention_mask is None:
             # attention mask for GPT: 1 if can be attended to, 0 if not
-            attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long)
+            attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long,device=states.device)
 
         # embed each modality with a different head
         state_embeddings = self.embed_state(states)
