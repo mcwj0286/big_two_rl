@@ -11,6 +11,37 @@ from torch.utils.data import DataLoader
 # from ppo_gameplay_dataset import PPOGameplayDataset, collate_fn
 from replaybuffer import replaybuffer , collate_fn
 from evaluate_model import ModelEvaluator  # Add this import at the top
+import wandb
+from dotenv import load_dotenv
+load_dotenv()
+def setup_wandb():
+    """Setup wandb with API key and handle login"""
+    try:
+        # Try to get API key from environment variable
+        api_key = os.getenv('WANDB_API_KEY')
+        if api_key is None:
+            # If not found in env, look for it in the config file
+            wandb_dir = os.path.expanduser("~/.wandb")
+            api_key_file = os.path.join(wandb_dir, "api_key")
+            if os.path.exists(api_key_file):
+                with open(api_key_file, "r") as f:
+                    api_key = f.read().strip()
+        
+        if api_key is None:
+            # If still not found, prompt user
+            print("WandB API key not found. Please enter your API key:")
+            api_key = input().strip()
+            
+        # Login with the API key
+        wandb.login(key=api_key)
+        print("Successfully logged in to Weights & Biases!")
+        
+    except Exception as e:
+        print(f"Failed to login to WandB: {e}")
+        print("Continuing without WandB logging...")
+        return False
+    
+    return True
 
 class ODTTrainer:
     def __init__(
@@ -23,12 +54,14 @@ class ODTTrainer:
         n_layers=6,
         learning_rate=1e-4,
         batch_size=64,
-        n_self_play_games=1000,
+        n_self_play_games=100,
         max_epochs=1,
         save_winners_only=True,  # New parameter
         device='cuda' if torch.cuda.is_available() else 'cpu',
         model_save_path='output/odt_model.pt',
-        eval_games=100  # Add this parameter
+        eval_games=100,  # Add this parameter
+        project_name="big2-dt",  # Add wandb project name
+        exp_name="dt-experiment",  # Add experiment name
     ):
         self.device = device
         self.state_dim = state_dim
@@ -41,14 +74,7 @@ class ODTTrainer:
         self.eval_games = eval_games
         self.best_win_rate = 0.0  # Add this to track best model
         self.best_reward = -1000.0  # Add this to track best model
-        self.evaluator = ModelEvaluator(
-                state_dim=self.state_dim,
-                act_dim=self.act_dim,
-                best_model_path=self.model_save_path,
-                model=self.model,  # Pass the current model directly
-                mode='val',  # Use train mode for less verbose output
-                player_types=['dt', 'random', 'dt', 'random']  # Evaluate against random agents
-            )
+        
         # Initialize the Decision Transformer model
         self.model = DecisionTransformer(
             state_dim=state_dim,
@@ -59,10 +85,39 @@ class ODTTrainer:
             n_blocks=n_layers,
             n_heads=n_heads,
         ).to(device)
-
+        self.evaluator = ModelEvaluator(
+                state_dim=self.state_dim,
+                act_dim=self.act_dim,
+                best_model_path=self.model_save_path,
+                model=self.model,  # Pass the current model directly
+                mode='val', 
+                player_types=['dt', 'random', 'dt', 'random']  # Evaluate against random agents
+            )
         # Initialize optimizer and loss function
         self.optimizer = optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         self.criterion = nn.CrossEntropyLoss(ignore_index=-1)
+
+        # Initialize wandb
+        self.run = wandb.init(
+            project=project_name,
+            name=exp_name,
+            config={
+                "state_dim": state_dim,
+                "act_dim": act_dim,
+                "hidden_size": hidden_size,
+                "context_len": context_len,
+                "n_heads": n_heads,
+                "n_layers": n_layers,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "n_self_play_games": n_self_play_games,
+                "max_epochs": max_epochs,
+                "save_winners_only": save_winners_only,
+            }
+        )
+        
+        # Log model architecture as a table
+        wandb.config.update({"model_type": "DecisionTransformer"})
 
     def self_play(self):
         """Collect trajectories through self-play using the current model."""
@@ -226,9 +281,21 @@ class ODTTrainer:
                 nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.optimizer.step()
 
+                # Log batch loss
+                # wandb.log({
+                #     "batch_loss": loss.item(),
+                #     "epoch": epoch,
+                #     "batch": batch_idx
+                # })
+                
                 total_loss += loss.item()
 
             avg_loss = total_loss / len(dataloader)
+            # Log epoch metrics
+            wandb.log({
+                "epoch_loss": avg_loss,
+                "epoch": epoch,
+            })
             print(f"Epoch [{epoch + 1}/{self.max_epochs}] Average Loss: {avg_loss:.4f}")
 
     def loop(self, num_iterations):
@@ -241,6 +308,15 @@ class ODTTrainer:
             # Evaluate current model
             wins, avg_reward = self.evaluator.evaluate_game(num_games=self.eval_games)
             
+            # Log validation metrics
+            wandb.log({
+                # "iteration": iteration,
+                "validation/win_rate": wins,
+                "validation/avg_reward": avg_reward,
+                # "best_win_rate": self.best_win_rate,
+                # "best_reward": self.best_reward
+            })
+            
             print(f"\nEvaluation Results:")
             print(f"Win Rate: {wins:.2f}%")
             print(f"Average Reward: {avg_reward:.4f}")
@@ -250,11 +326,17 @@ class ODTTrainer:
                 self.best_win_rate = wins
                 best_model_path = self.model_save_path.replace('.pt', '_best.pt')
                 torch.save(self.model.state_dict(), best_model_path)
+                # Log best model with wandb
+                # wandb.save(best_model_path)
                 print(f"New best model saved with {wins:.2f} win rate and {avg_reward} reward ")
             
             # Always save latest model
             torch.save(self.model.state_dict(), self.model_save_path)
+            # wandb.save(self.model_save_path)
             print(f"Latest model saved to {self.model_save_path}")
+        
+        # Finish the wandb run
+        wandb.finish()
 
 if __name__ == "__main__":
     # Set random seeds for reproducibility
@@ -265,5 +347,15 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    trainer = ODTTrainer(save_winners_only=True)  # Example with winners only
-    trainer.loop(num_iterations=2)
+    # Setup wandb before creating trainer
+    if setup_wandb()==False:
+        trainer = ODTTrainer(
+            save_winners_only=True,
+            project_name="big2-dt",
+            exp_name=f"dt-exp-{wandb.util.generate_id()}"
+        )
+        trainer.loop(num_iterations=2)
+    else:
+        print("Running without WandB logging")
+        trainer = ODTTrainer(save_winners_only=True)
+        trainer.loop(num_iterations=2)
