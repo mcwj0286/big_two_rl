@@ -70,13 +70,10 @@ class PPOGameplayDataset(Dataset):
         game_id = torch.tensor(game_id, dtype=torch.long)
         player_id = torch.tensor(player_id, dtype=torch.long)
 
-        # Make a copy of actions and remove the last element
-        actions_shifted = actions[:-1]
-        # One-hot encode the shifted actions
-        actions_shifted_onehot = F.one_hot(actions_shifted, num_classes=1695).float()
+
+        actions_onehot = F.one_hot(actions, num_classes=1695).float()
         # Create a zero vector and prepend it
-        zero_vector = torch.zeros(1, 1695, dtype=torch.float32)
-        actions_shifted_onehot = torch.cat([zero_vector, actions_shifted_onehot], dim=0)
+
 
         # Normalize rewards to range [-1, 1]
         rewards = 2 * (rewards - self.min_reward) / (self.max_reward - self.min_reward) - 1
@@ -85,7 +82,7 @@ class PPOGameplayDataset(Dataset):
         return {
             'states': states,
             'actions': actions,
-            'actions_one_hot': actions_shifted_onehot,
+            'actions_one_hot': actions_onehot,
             'rewards': rewards,
             'timesteps': timesteps,
             'game_id': game_id,

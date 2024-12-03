@@ -21,7 +21,7 @@ def train_decision_transformer(
     h_dim=512,
     n_heads=8,
     drop_p=0.1,
-    max_timestep=1000,
+    max_timestep=None,
     batch_size=16,
     learning_rate=1e-4,
     max_epochs=10,
@@ -104,7 +104,13 @@ def train_decision_transformer(
                 
                 # sparse rewards
                 # rewards = rewards.unsqueeze(-1)  # Shape: (B, T, 1)
-
+                # print(f"Shape of states: {states.shape}")
+                # print(f"Shape of actions: {actions.shape}")
+                # print(f"Shape of rewards: {rewards.shape}")
+                # print(f"Shape of timesteps: {timesteps.shape}")
+                # print(f"Shape of attention_mask: {attention_mask.shape}")
+                # print(f"Shape of returns_to_go: {returns_to_go.shape}")
+                # print(f"Shape of action_one_hot: {action_one_hot.shape}")
                 # Forward pass without autocast
                 optimizer.zero_grad()
                 _, action_preds, _ = model(
@@ -206,7 +212,7 @@ if __name__ == "__main__":
         hdf5_path=hdf5_path,
         state_dim=state_dim,
         act_dim=act_dim,
-        max_epochs=300,
+        max_epochs=5,
         batch_size=64,
-        learning_rate=5e-6
+        learning_rate=1e-5
     )

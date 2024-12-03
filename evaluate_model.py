@@ -122,10 +122,10 @@ class ModelEvaluator:
                         # Shape: (1, seq_length) - batch_size=1, sequence_length
                         batch_timesteps = torch.tensor(self.timestep_buffer[current_player - 1], dtype=torch.long, device=self.device).unsqueeze(0)
 
-                        if seq_length == 1:
-                            # Prepare one-hot encoded action
-                            action_one_hot = torch.zeros(1, 1, self.act_dim, device=self.device)
-                            self.action_buffer[current_player - 1].append(action_one_hot)
+                        
+                        # Prepare one-hot encoded action
+                        action_one_hot = torch.zeros(1, 1, self.act_dim, device=self.device)
+                        self.action_buffer[current_player - 1].append(action_one_hot)
                         
                         batch_action_one_hot = torch.stack(self.action_buffer[current_player - 1], dim=1)
                         # print(f"States shape: {batch_states.shape}")  # (1, seq_length, 412)
@@ -148,7 +148,7 @@ class ModelEvaluator:
                         # Convert action to one-hot
                         action_one_hot = torch.zeros(1,1,self.act_dim, device=self.device)
                         action_one_hot[0][0][action] = 1
-                        self.action_buffer[current_player - 1].append(action_one_hot)
+                        self.action_buffer[current_player - 1][-1] = action_one_hot
 
                         # Increment the local timestep counter
                         self.local_timesteps[current_player - 1] += 1
