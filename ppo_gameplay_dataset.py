@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F  # Import for one-hot encoding
 
 class PPOGameplayDataset(Dataset):
-    def __init__(self, hdf5_path):
+    def __init__(self, hdf5_path,reward_shaping= False):
         """
         Initializes the PPOGameplayDataset.
 
@@ -28,6 +28,7 @@ class PPOGameplayDataset(Dataset):
             all_rewards.extend(rewards)
         self.min_reward = min(all_rewards)
         self.max_reward = max(all_rewards)
+        self.reward_shaping = reward_shaping
 
     def __len__(self):
         """
@@ -75,9 +76,11 @@ class PPOGameplayDataset(Dataset):
         # Create a zero vector and prepend it
 
 
-        # Normalize rewards to range [-1, 1]
-        rewards = 2 * (rewards - self.min_reward) / (self.max_reward - self.min_reward) - 1
-        # rewards[actions == 1694] -= 0.1  # Apply penalty for action 1694
+        # reward normalisation
+        rewards = rewards/10
+        #reward shaping
+        if self.reward_shaping:
+            rewards[actions == 1694] -= 0.2  # Apply penalty for action 1694
 
         return {
             'states': states,
