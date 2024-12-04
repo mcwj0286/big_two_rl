@@ -26,6 +26,11 @@ class replaybuffer(Dataset):
         action = torch.tensor(traj['actions'], dtype=torch.long)
         # Normalize rewards
         reward = reward/ 10.0
+
+        #reward shaping , add penality to pass action
+        reward[action == 1694] -= 0.3
+        # add reward for action index >= 13 (not single card)
+        reward[action >=14] += 0.1
         return {
             'states': torch.tensor(traj['states'], dtype=torch.float32),
             'actions': torch.tensor(traj['actions'], dtype=torch.long),
