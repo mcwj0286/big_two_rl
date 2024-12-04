@@ -13,6 +13,38 @@ import torch.optim as optim
 # Import ModelEvaluator
 from evaluate_model import ModelEvaluator
 
+import wandb
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+def setup_wandb():
+    """Setup wandb with API key and handle login"""
+    try:
+        # Try to get API key from environment variable
+        api_key = os.getenv('WANDB_API_KEY')
+        if (api_key is None):
+            # If not found in env, look for it in the config file
+            wandb_dir = os.path.expanduser("~/.wandb")
+            api_key_file = os.path.join(wandb_dir, "api_key")
+            if os.path.exists(api_key_file):
+                with open(api_key_file, "r") as f:
+                    api_key = f.read().strip()
+        
+        if (api_key is None):
+            print("WandB API key not found. Please enter your API key:")
+            api_key = input().strip()
+            
+        wandb.login(key=api_key)
+        print("Successfully logged in to Weights & Biases!")
+        
+    except Exception as e:
+        print(f"Failed to login to WandB: {e}")
+        print("Continuing without WandB logging...")
+        return False
+    
+    return True
+
 def train_decision_transformer(
     hdf5_path,
     state_dim,
@@ -30,6 +62,9 @@ def train_decision_transformer(
     save_model_path='output/official_decision_transformer.pt',
     patience=30,  # Added for early stopping
     # gradient_clip=1.0  # Added for gradient clipping
+    project_name="big2-dt-offline",  # Add wandb project name
+    exp_name="dt-offline-training",  # Add experiment name
+    reward_shaping=True
 ):
     # Add CUDA error handling and debug info
     torch.backends.cudnn.enabled = True
@@ -39,8 +74,30 @@ def train_decision_transformer(
     import os
     os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     
+    # Setup wandb
+    if setup_wandb():
+        # Initialize wandb run
+        wandb.init(
+            project=project_name,
+            name=exp_name,
+            config={
+                "state_dim": state_dim,
+                "act_dim": act_dim,
+                "hidden_size": h_dim,
+                "n_blocks": n_blocks,
+                "n_heads": n_heads,
+                "dropout": drop_p,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "max_epochs": max_epochs,
+                "patience": patience,
+                'reward_shaping': reward_shaping
+            }
+        )
+        wandb.config.update({"model_type": "DecisionTransformer"})
+
     # Initialize Dataset and DataLoader
-    dataset = PPOGameplayDataset(hdf5_path)
+    dataset = PPOGameplayDataset(hdf5_path,reward_shaping=reward_shaping)
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -68,7 +125,9 @@ def train_decision_transformer(
         state_dim=state_dim,
         act_dim=act_dim,
         ppo_model_path='output/modelParameters_best.pt',
-        device=device
+        mode='val',
+        device=device,
+        player_types=['dt', 'random', 'dt', 'random']
     )
     # Define optimizer and learning rate scheduler
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -88,6 +147,8 @@ def train_decision_transformer(
     epochs_no_improve = 0  # Added for early stopping
     for epoch in range(max_epochs):
         total_loss = 0
+        batch_losses = []  # Track losses for each batch
+        
         for batch_idx, batch in enumerate(dataloader):
             try:
                 # Move data to device with validation
@@ -148,6 +209,17 @@ def train_decision_transformer(
 
                 total_loss += loss.item()
 
+                # Log batch metrics
+                # if wandb.run is not None:
+                #     wandb.log({
+                #         "batch_loss": loss.item(),
+                #         "batch": batch_idx,
+                #         "epoch": epoch,
+                #         "learning_rate": optimizer.param_groups[0]['lr']
+                #     })
+                
+                batch_losses.append(loss.item())
+
                 if batch_idx % 10 == 0:
                     print(f"Epoch [{epoch+1}/{max_epochs}], Batch [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
             except RuntimeError as e:
@@ -178,6 +250,17 @@ def train_decision_transformer(
         model.train()
         print(f"Validation Metrics - Win Rate: {win_rate:.2f}%, Avg. Reward: {avg_reward:.2f}")
 
+        # Log epoch metrics
+        if wandb.run is not None:
+            wandb.log({
+                "epoch": epoch,
+                "epoch_loss": avg_loss,
+                "win_rate": win_rate,
+                "avg_reward": avg_reward,
+                # "best_win_rate": best_win_rate,
+                # "best_avg_reward": best_avg_reward
+            })
+
         # Scheduler step based on win_rate
         scheduler.step(win_rate)
 
@@ -188,6 +271,8 @@ def train_decision_transformer(
             epochs_no_improve = 0  # Reset counter
             # Save the current model as the best model
             torch.save(model.state_dict(), save_model_path)
+            # if wandb.run is not None:
+            #     wandb.save(save_model_path)  # Save model to wandb
             print(f"New best model saved with win rate: {win_rate:.2f}% and avg reward: {avg_reward:.2f}")
         else:
             epochs_no_improve += 1
@@ -196,8 +281,12 @@ def train_decision_transformer(
                 print("Early stopping triggered.")
                 break  # Exit training loop
 
+    # Finish wandb run
+    if wandb.run is not None:
+        wandb.finish()
+
     # Save the trained model
-    torch.save(model.state_dict(), save_model_path)
+    torch.save(model.state_dict(), 'output/official_decision_transformer_final.pt')
     print("Training complete. Model saved.")
 
     # Close the dataset
