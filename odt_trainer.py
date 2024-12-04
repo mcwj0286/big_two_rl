@@ -19,7 +19,7 @@ def setup_wandb():
     try:
         # Try to get API key from environment variable
         api_key = os.getenv('WANDB_API_KEY')
-        if api_key is None:
+        if (api_key is None):
             # If not found in env, look for it in the config file
             wandb_dir = os.path.expanduser("~/.wandb")
             api_key_file = os.path.join(wandb_dir, "api_key")
@@ -27,7 +27,7 @@ def setup_wandb():
                 with open(api_key_file, "r") as f:
                     api_key = f.read().strip()
         
-        if api_key is None:
+        if (api_key is None):
             # If still not found, prompt user
             print("WandB API key not found. Please enter your API key:")
             api_key = input().strip()
@@ -54,7 +54,7 @@ class ODTTrainer:
         n_layers=6,
         learning_rate=1e-4,
         batch_size=64,
-        n_self_play_games=100,
+        n_self_play_games=10,
         max_epochs=1,
         save_winners_only=True,  # New parameter
         device='cuda' if torch.cuda.is_available() else 'cpu',
@@ -62,6 +62,7 @@ class ODTTrainer:
         eval_games=100,  # Add this parameter
         project_name="big2-dt",  # Add wandb project name
         exp_name="dt-experiment",  # Add experiment name
+        temperature=2.0  # Start with a higher temperature
     ):
         self.device = device
         self.state_dim = state_dim
@@ -74,6 +75,8 @@ class ODTTrainer:
         self.eval_games = eval_games
         self.best_win_rate = 0.0  # Add this to track best model
         self.best_reward = -1000.0  # Add this to track best model
+        self.initial_temperature = temperature
+        self.temperature = temperature
         
         # Initialize the Decision Transformer model
         self.model = DecisionTransformer(
@@ -169,12 +172,13 @@ class ODTTrainer:
                     batch_rewards = torch.stack(reward_buffers[player_idx], dim=0).unsqueeze(0)
                     batch_timesteps = torch.stack(timestep_buffers[player_idx], dim=0).unsqueeze(0)
 
-                    # Get action from the model
+                    # Get action from the model with current temperature
                     action_logits = self.model.get_action(
                         states=batch_states,
                         actions=batch_actions,
                         returns_to_go=batch_rewards,
                         timesteps=batch_timesteps,
+                        temperature=self.temperature
                     )
 
                     # Mask invalid actions
@@ -185,6 +189,16 @@ class ODTTrainer:
                     action = dist.sample().item()
                     # action = torch.argmax(masked_logits).item()
 
+                    # Print available actions for debugging
+                    # action_indices = np.arange(1695)
+                    # action_indices = action_indices + curr_avail_actions
+                    # # print("Action indices:", action_indices.shape)
+                    # # print("available_actions indices:", available_actions.shape)
+                    # # Get valid action indices where value is 0
+                    # valid_actions = np.where(action_indices >=0)[1]
+                    # print("Available action choices:", valid_actions)
+        
+                    # print(f"Player {current_player} Action: {action}")
                     # Convert action to one-hot
                     action_one_hot = torch.zeros(1, 1, self.act_dim, device=self.device)
                     action_one_hot[0, 0, action] = 1
@@ -205,7 +219,7 @@ class ODTTrainer:
 
                     # Assign rewards if game is done
                     if game_done:
-                        print(f"Game {game_num} done. Reward: {reward}")
+                        # print(f"Game {game_num} done. Reward: {reward}")
                         for pid in [1, 2, 3, 4]:
                             if len(current_trajectories[pid]['rewards']) > 0:
                                 current_trajectories[pid]['rewards'][-1] = reward[pid - 1]
@@ -221,7 +235,7 @@ class ODTTrainer:
                 if self.save_winners_only:
                     # Find the winning player (player with highest reward)
                     winner_id = max(range(4), key=lambda i: reward[i]) + 1
-                    print(f"Game {game_num} done. Winner: Player {winner_id}")
+                    # print(f"Game {game_num} done. Winner: Player {winner_id}")
                     # Only save the winner's trajectory
                     if len(current_trajectories[winner_id]['states']) > 0:
                         trajectories.append(current_trajectories[winner_id])
@@ -301,7 +315,19 @@ class ODTTrainer:
     def loop(self, num_iterations):
         for iteration in range(num_iterations):
             print(f"\nIteration {iteration + 1}/{num_iterations}")
-            
+
+            # Adjust temperature over iterations (exponential decay)
+            decay_rate = 0.99  # Adjust decay rate as needed
+            self.temperature = max(0.1, self.initial_temperature * (decay_rate ** iteration))
+
+            # Optionally, use linear decay instead
+            # min_temperature = 0.1
+            # self.temperature = max(min_temperature, self.initial_temperature - (
+            #     (self.initial_temperature - min_temperature) * iteration / num_iterations))
+
+            # Log the current temperature
+            wandb.log({"temperature": self.temperature, "iteration": iteration})
+
             # Self-play and training
             self.self_play()
             
@@ -348,14 +374,14 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(seed)
 
     # Setup wandb before creating trainer
-    if setup_wandb()==False:
+    if setup_wandb():
         trainer = ODTTrainer(
             save_winners_only=True,
             project_name="big2-dt",
             exp_name=f"dt-exp-{wandb.util.generate_id()}"
         )
-        trainer.loop(num_iterations=2)
+        trainer.loop(num_iterations=2000)
     else:
         print("Running without WandB logging")
         trainer = ODTTrainer(save_winners_only=True)
-        trainer.loop(num_iterations=2)
+        trainer.loop(num_iterations=10000)

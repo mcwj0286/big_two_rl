@@ -141,7 +141,7 @@ class DecisionTransformer(TrajectoryModel):
 
         return state_preds, action_preds, return_preds
 
-    def get_action(self, states, actions,returns_to_go, timesteps, **kwargs):
+    def get_action(self, states, actions,returns_to_go, timesteps, temperature=1.0, **kwargs):
       
         """
         Generate an action prediction based on the given states, actions, returns to go, and timesteps.
@@ -150,6 +150,7 @@ class DecisionTransformer(TrajectoryModel):
             actions (torch.Tensor): Tensor of shape (sequence_length, act_dim) representing the actions.
             returns_to_go (torch.Tensor): Tensor of shape (sequence_length, 1) representing the returns to go.
             timesteps (torch.Tensor): Tensor of shape (sequence_length,) representing the timesteps.
+            temperature (float): Temperature parameter for scaling logits during action sampling. Default is 1.0.
             **kwargs: Additional arguments for the forward method.
         Returns:
             torch.Tensor: The predicted action for the last timestep in the sequence.
@@ -195,7 +196,10 @@ class DecisionTransformer(TrajectoryModel):
         _, action_preds, _ = self.forward(
             states, actions, returns_to_go, timesteps, attention_mask=attention_mask, **kwargs)
 
-        return action_preds[0,-1]
+        # Apply temperature to logits
+        logits = action_preds[0, -1] / temperature
+
+        return logits
     
 # if __name__ == "__main__":
 #     state_dim = 10
