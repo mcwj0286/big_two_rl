@@ -30,8 +30,8 @@ class PPONetwork(nn.Module):
         return pi_logits, value
 
     def act(self, obs, avail_actions):
-        obs = torch.tensor(obs, dtype=torch.float32,device=self.device)
-        avail_actions = torch.tensor(avail_actions, dtype=torch.float32,device=self.device)
+        obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+        avail_actions = torch.tensor(avail_actions, dtype=torch.float32, device=self.device)
         pi_logits, value = self.forward(obs)
         pi_logits = pi_logits + avail_actions  # Mask unavailable actions
         dist = torch.distributions.Categorical(logits=pi_logits)
@@ -40,6 +40,9 @@ class PPONetwork(nn.Module):
         return action.detach().cpu().numpy(), value.detach().cpu().numpy(), neglogp.detach().cpu().numpy()
 
     def evaluate_actions(self, obs, avail_actions, actions):
+        obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+        avail_actions = torch.tensor(avail_actions, dtype=torch.float32, device=self.device)
+        actions = torch.tensor(actions, dtype=torch.int64, device=self.device)
         pi_logits, value = self.forward(obs)
         pi_logits = pi_logits + avail_actions
         dist = torch.distributions.Categorical(logits=pi_logits)

@@ -74,7 +74,7 @@ class Big2DDQNTrainer:
         """Select action using epsilon-greedy policy"""
         if random.random() < self.eps:
             # Random action from available actions
-            valid_actions = np.where(avail_actions == 1)[0]
+            valid_actions = np.where(avail_actions == 0)[0]
             return np.random.choice(valid_actions)
         
         state = torch.FloatTensor(state).to(device)
@@ -154,7 +154,7 @@ class Big2DDQNTrainer:
                 
                 # Store transitions in memory
                 for i in range(self.n_games):
-                    self.memory.update(states[i], actions[i], rewards[i], dones[i])
+                    self.memory.update(states[i], actions[i], rewards[i], dones[i],avail_actions[i])
                     episode_rewards[i] += rewards[i]
                     episode_lengths[i] += 1
                 

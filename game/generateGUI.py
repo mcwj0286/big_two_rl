@@ -1,3 +1,9 @@
+import os 
+import sys
+sys.path.append('/Users/johnmok/Documents/GitHub/big_two_rl')
+from PIL import Image, ImageTk
+from PIL.Image import Resampling
+
 import tkinter
 from tkinter import messagebox
 from PIL import Image, ImageTk
@@ -8,6 +14,7 @@ import enumerateOptions
 from models.PPONetwork_pytorch import PPONetwork, PPOModel
 import torch
 import joblib
+import sys
 
 mainGame = big2Game.big2Game()
 
@@ -19,25 +26,25 @@ maxGradNorm = 0.5
 
 # Initialize PyTorch-based networks for players
 playerNetworks = {}
-playerNetworks[1] = PPONetwork(inDim, outDim, "p1Net")
-playerNetworks[2] = PPONetwork(inDim, outDim, "p2Net")
-playerNetworks[3] = PPONetwork(inDim, outDim, "p3Net")
-playerNetworks[4] = PPONetwork(inDim, outDim, "p4Net")
+playerNetworks[1] = PPONetwork(inDim, outDim)
+playerNetworks[2] = PPONetwork(inDim, outDim)
+playerNetworks[3] = PPONetwork(inDim, outDim)
+playerNetworks[4] = PPONetwork(inDim, outDim)
 
 # Initialize PyTorch-based PPO models for players
 playerModels = {}
-playerModels[1] = PPOModel(playerNetworks[1], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[2] = PPOModel(playerNetworks[2], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[3] = PPOModel(playerNetworks[3], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[4] = PPOModel(playerNetworks[4], inDim, outDim, entCoef, valCoef, maxGradNorm)
+playerModels[1] = PPOModel(playerNetworks[1])
+playerModels[2] = PPOModel(playerNetworks[2])
+playerModels[3] = PPOModel(playerNetworks[3])
+playerModels[4] = PPOModel(playerNetworks[4])
 
 # Load PyTorch model weights
 def load_model_weights():
-    params = torch.load("modelParameters136500.pth")  # Update file extension if necessary
-    playerNetworks[1].load_state_dict(params["p1Net"])
-    playerNetworks[2].load_state_dict(params["p2Net"])
-    playerNetworks[3].load_state_dict(params["p3Net"])
-    playerNetworks[4].load_state_dict(params["p4Net"])
+    params = torch.load("output/modelParameters_best.pt")
+    playerNetworks[1].load_state_dict(params)
+    playerNetworks[2].load_state_dict(params)
+    playerNetworks[3].load_state_dict(params)
+    playerNetworks[4].load_state_dict(params)
 
 load_model_weights()
 
@@ -52,24 +59,26 @@ control = 0
 
 currSampledOption = -1
 
-#load images
+# Load images
 cardImages = {}
 cardImages2 = {}
 cardImages3 = {}
 cardImages4 = {}
-for i in range(1,53):
+for i in range(1, 53):
     string = "cardImages/" + str(i) + ".png"
-    cardImages[i] = Image.open(string)
-    cardImages[i] = cardImages[i].resize((63,91), Image.ANTIALIAS)
-    cardImages2[i] = cardImages[i].rotate(270, expand=True)
-    cardImages3[i] = cardImages[i]
-    cardImages4[i] = cardImages[i].rotate(90, expand=True)
-    cardImages[i] = ImageTk.PhotoImage(cardImages[i])
+    cardImage = Image.open(string)
+    cardImage = cardImage.resize((63, 91), Resampling.LANCZOS)
+    cardImages2[i] = cardImage.rotate(270, expand=True)
+    cardImages3[i] = cardImage
+    cardImages4[i] = cardImage.rotate(90, expand=True)
+    cardImages[i] = ImageTk.PhotoImage(cardImage)
     cardImages2[i] = ImageTk.PhotoImage(cardImages2[i])
     cardImages3[i] = ImageTk.PhotoImage(cardImages3[i])
     cardImages4[i] = ImageTk.PhotoImage(cardImages4[i])
+
+# Correctly process 'backOfCard'
 backOfCard = Image.open("cardImages/back.jpg")
-backOfCard = backOfCard.resize((63,91), Image.ANTIALIAS)
+backOfCard = backOfCard.resize((63, 91), Resampling.LANCZOS)
 backOfCardRotated = backOfCard.rotate(90, expand=True)
 backOfCard = ImageTk.PhotoImage(backOfCard)
 backOfCardRotated = ImageTk.PhotoImage(backOfCardRotated)
@@ -276,17 +285,17 @@ def updateScreen():
     
 def updateValue():
     go, state, actions = mainGame.getCurrentState()
-    state_tensor = torch.tensor(state, dtype=torch.float32)
-    actions_tensor = torch.tensor(actions, dtype=torch.float32)
-    val = playerNetworks[go].value(state_tensor, actions_tensor)
+    state_tensor = torch.tensor(state, dtype=torch.float32, device=playerNetworks[go].device)
+    actions_tensor = torch.tensor(actions, dtype=torch.float32, device=playerNetworks[go].device)
+    val = playerNetworks[go].forward(state_tensor)[1]
     valueValue.set(str(val.item()))
     
 def updateProbNegLog(index):
     go, state, actions = mainGame.getCurrentState()
-    state_tensor = torch.tensor(state, dtype=torch.float32)
-    actions_tensor = torch.tensor(actions, dtype=torch.float32)
-    nlp = playerModels[go].neglogp(state_tensor, actions_tensor, torch.tensor([index], dtype=torch.long))
-    prob = torch.exp(-nlp)
+    state_tensor = torch.tensor(state, dtype=torch.float32, device=playerNetworks[go].device)
+    actions_tensor = torch.tensor(actions, dtype=torch.float32, device=playerNetworks[go].device)
+    neglogp, _, _ = playerNetworks[go].evaluate_actions(state_tensor, actions_tensor, torch.tensor([index], dtype=torch.int64, device=playerNetworks[go].device))
+    prob = torch.exp(-neglogp)
     probNegLogValue.set(str(prob.item()))
         
     
@@ -327,10 +336,10 @@ def sampleFromNetwork():
     global currSampledOption
     
     go, state, actions = mainGame.getCurrentState()
-    state_tensor = torch.tensor(state, dtype=torch.float32)
-    actions_tensor = torch.tensor(actions, dtype=torch.float32)
+    state_tensor = torch.tensor(state, dtype=torch.float32, device=playerNetworks[go].device)
+    actions_tensor = torch.tensor(actions, dtype=torch.float32, device=playerNetworks[go].device)
     with torch.no_grad():
-        a, v, nlp = playerNetworks[go].step(state_tensor, actions_tensor)
+        a, v, nlp = playerNetworks[go].act(state_tensor, actions_tensor)
     currSampledOption = a.item()
     if a.item() == enumerateOptions.passInd:
         sampledOptionValue.set("pass")
